@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}NorthHarv{% endblock %} — Cyberspace Intelligence</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='28'>🔭</text></svg>">
+  {% block head %}{% endblock %}
+</head>
+<body>
+
+<div class="app-shell">
+
+  <!-- Top navigation -->
+  <nav class="topnav">
+    <a href="/" class="logo" style="text-decoration:none">
+      <span style="color:var(--primary)">⬡</span>
+      NorthHarv
+      <span class="dot" style="color:var(--fg-3);font-weight:400;font-size:.75rem;margin-left:.2rem">/ Cyberspace Intelligence</span>
+    </a>
+
+    <form class="nav-search" action="/search" method="get" id="topSearchForm">
+      <span class="search-icon">🔍</span>
+      <input type="text" name="q" id="topSearchInput"
+             placeholder='port:443   product:nginx   cve:CVE-2024   kev:true'
+             value="{{ request.query_params.get('q', '') }}"
+             autocomplete="off" spellcheck="false">
+    </form>
+
+    <div class="nav-actions">
+      <a href="/scan"      class="nav-link {% if request.url.path == '/scan' %}active{% endif %}">⚡ Scan</a>
+      <a href="/feeds"     class="nav-link {% if request.url.path == '/feeds' %}active{% endif %}">📡 Feeds</a>
+      <a href="/wordlists" class="nav-link {% if request.url.path == '/wordlists' %}active{% endif %}">📋 Wordlists</a>
+    </div>
+  </nav>
+
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="sidebar-label">Explore</div>
+    <a href="/"             class="sidebar-link {% if request.url.path == '/' %}active{% endif %}">
+      <span class="sidebar-icon">🏠</span> Dashboard
+    </a>
+    <a href="/search"       class="sidebar-link {% if request.url.path == '/search' %}active{% endif %}">
+      <span class="sidebar-icon">🔍</span> Search
+    </a>
+    <a href="/search?q=kev:true" class="sidebar-link">
+      <span class="sidebar-icon" style="color:var(--danger)">☠️</span> KEV Hits
+    </a>
+    <a href="/search?q=cvss:9.0" class="sidebar-link">
+      <span class="sidebar-icon" style="color:var(--critical)">🔴</span> Critical
+    </a>
+    <a href="/search?q=service:http" class="sidebar-link">
+      <span class="sidebar-icon">🌐</span> HTTP Hosts
+    </a>
+    <a href="/search?q=ssl.cn:*" class="sidebar-link">
+      <span class="sidebar-icon">🔒</span> TLS/SSL
+    </a>
+
+    <div class="sidebar-label" style="margin-top:.5rem">Operations</div>
+    <a href="/scan"      class="sidebar-link {% if request.url.path == '/scan' %}active{% endif %}">
+      <span class="sidebar-icon">⚡</span> Scan Manager
+    </a>
+    <a href="/feeds"     class="sidebar-link {% if request.url.path == '/feeds' %}active{% endif %}">
+      <span class="sidebar-icon">📡</span> Feed Sync
+    </a>
+    <a href="/wordlists" class="sidebar-link {% if request.url.path == '/wordlists' %}active{% endif %}">
+      <span class="sidebar-icon">📋</span> Wordlists
+    </a>
+
+    <div class="sidebar-label" style="margin-top:.5rem">Quick Filters</div>
+    <a href="/search?q=port:22"    class="sidebar-link"><span class="sidebar-icon">🔑</span> SSH (22)</a>
+    <a href="/search?q=port:80"    class="sidebar-link"><span class="sidebar-icon">🌐</span> HTTP (80)</a>
+    <a href="/search?q=port:443"   class="sidebar-link"><span class="sidebar-icon">🔒</span> HTTPS (443)</a>
+    <a href="/search?q=port:3389"  class="sidebar-link"><span class="sidebar-icon">🖥️</span> RDP (3389)</a>
+    <a href="/search?q=port:3306"  class="sidebar-link"><span class="sidebar-icon">🗄️</span> MySQL (3306)</a>
+    <a href="/search?q=port:27017" class="sidebar-link"><span class="sidebar-icon">🍃</span> MongoDB (27017)</a>
+    <a href="/search?q=port:6379"  class="sidebar-link"><span class="sidebar-icon">🔴</span> Redis (6379)</a>
+  </aside>
+
+  <!-- Main content -->
+  <main class="main-content">
+    {% block content %}{% endblock %}
+  </main>
+
+</div>
+
+<!-- Toast container -->
+<div class="toast-container" id="toastContainer"></div>
+
+<script src="/static/js/main.js"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,696 @@
+"""
+NorthHarv Web Application — FastAPI + WebSocket
+Wraps the demo.py engine with a full web UI and REST API.
+"""
+import asyncio
+import csv
+import io
+import json
+import os
+import sqlite3
+import sys
+import threading
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Optional
+
+# Ensure demo.py is on the path
+_base = Path(__file__).parent.parent
+sys.path.insert(0, str(_base))
+import demo  # noqa: E402
+
+from fastapi import (
+    BackgroundTasks, FastAPI, HTTPException, Query,
+    WebSocket, WebSocketDisconnect, Request
+)
+from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from jinja2 import Environment, FileSystemLoader
+
+from northharv import wordlists  # noqa: E402
+
+# ── Paths ──────────────────────────────────────────────────────────────────
+UI_DIR = _base / "ui"
+
+# ── FastAPI app ────────────────────────────────────────────────────────────
+app = FastAPI(
+    title="NorthHarv",
+    description="Advanced Cyberspace Intelligence Platform",
+    version="1.0.0",
+    docs_url="/api/docs",
+    redoc_url="/api/redoc",
+)
+
+app.mount("/static", StaticFiles(directory=str(UI_DIR / "static")), name="static")
+# cache_size=0 avoids Python-3.14 hashability issues with Jinja2's LRU cache
+_jinja_env = Environment(
+    loader=FileSystemLoader(str(UI_DIR / "templates")),
+    autoescape=True,
+    cache_size=0,
+)
+templates = Jinja2Templates(env=_jinja_env)
+
+# ── Scan state ──────────────────────────────────────────────────────────────
+# scan_id -> {"status","target","started","found","errors","round_id","name"}
+active_scans: dict[str, dict[str, Any]] = {}
+scan_queues: dict[str, asyncio.Queue] = {}
+
+# enum_id -> {"status","target","wordlist","results":[...]}
+active_enums: dict[str, dict[str, Any]] = {}
+
+# ── Startup ─────────────────────────────────────────────────────────────────
+@app.on_event("startup")
+async def _startup():
+    demo.init_db()
+    demo.GEO = demo.GeoDB()
+    demo.CVE = demo.CveDB()
+    _ensure_annotations_table()
+
+
+def _ensure_annotations_table():
+    conn = demo.db()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS annotations (
+            ip TEXT NOT NULL, port INTEGER NOT NULL,
+            notes TEXT DEFAULT '', tags TEXT DEFAULT '',
+            starred INTEGER DEFAULT 0, updated_at TEXT,
+            PRIMARY KEY (ip, port)
+        )""")
+    conn.commit()
+    conn.close()
+
+
+# ── DB helpers ───────────────────────────────────────────────────────────────
+def _db_dict(query: str, params=()) -> list[dict]:
+    conn = demo.db()
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def _db_one(query: str, params=()) -> Optional[dict]:
+    rows = _db_dict(query, params)
+    return rows[0] if rows else None
+
+
+def _enrich_row(r: dict) -> dict:
+    """Parse JSON blobs and add computed fields."""
+    for f in ("tls_json", "geo_json"):
+        if r.get(f):
+            try:
+                r[f] = json.loads(r[f])
+            except Exception:
+                r[f] = {}
+    if r.get("cves"):
+        r["cves_list"] = [c for c in r["cves"].split(",") if c]
+    else:
+        r["cves_list"] = []
+    if r.get("kev"):
+        r["kev_list"] = [c for c in r["kev"].split(",") if c]
+    else:
+        r["kev_list"] = []
+    if r.get("cpe"):
+        try:
+            r["cpe_list"] = json.loads(r["cpe"])
+        except Exception:
+            r["cpe_list"] = []
+    # severity label
+    cvss = float(r.get("cvss_max") or 0)
+    if cvss >= 9.0:
+        r["severity"] = "CRITICAL"
+    elif cvss >= 7.0:
+        r["severity"] = "HIGH"
+    elif cvss >= 4.0:
+        r["severity"] = "MEDIUM"
+    elif cvss > 0:
+        r["severity"] = "LOW"
+    else:
+        r["severity"] = "NONE"
+    return r
+
+
+# ── API: Stats ────────────────────────────────────────────────────────────────
+@app.get("/api/stats")
+async def api_stats():
+    conn = demo.db()
+    out: dict[str, Any] = {}
+    for t in ("hosts", "observations", "scan_rounds", "cve", "kev", "epss"):
+        try:
+            out[t] = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+        except sqlite3.OperationalError:
+            out[t] = 0
+    # unique hosts (distinct IPs)
+    try:
+        out["unique_ips"] = conn.execute(
+            "SELECT COUNT(DISTINCT ip) FROM hosts").fetchone()[0]
+    except Exception:
+        out["unique_ips"] = 0
+    # critical hosts
+    try:
+        out["critical_hosts"] = conn.execute(
+            "SELECT COUNT(DISTINCT ip) FROM hosts WHERE cvss_max >= 9").fetchone()[0]
+    except Exception:
+        out["critical_hosts"] = 0
+    # kev hosts
+    try:
+        out["kev_hosts"] = conn.execute(
+            "SELECT COUNT(DISTINCT ip) FROM hosts WHERE kev != ''").fetchone()[0]
+    except Exception:
+        out["kev_hosts"] = 0
+    # top products
+    try:
+        out["top_products"] = [
+            {"product": r[0], "count": r[1]}
+            for r in conn.execute(
+                "SELECT product, COUNT(*) c FROM hosts WHERE product != '' "
+                "GROUP BY product ORDER BY c DESC LIMIT 10").fetchall()
+        ]
+    except Exception:
+        out["top_products"] = []
+    # top ports
+    try:
+        out["top_ports"] = [
+            {"port": r[0], "count": r[1]}
+            for r in conn.execute(
+                "SELECT port, COUNT(*) c FROM hosts GROUP BY port ORDER BY c DESC LIMIT 10"
+            ).fetchall()
+        ]
+    except Exception:
+        out["top_ports"] = []
+    # top countries
+    try:
+        out["top_countries"] = [
+            {"country": r[0] or "Unknown", "count": r[1]}
+            for r in conn.execute(
+                "SELECT json_extract(geo_json,'$.country_code') cc, COUNT(*) c "
+                "FROM hosts GROUP BY cc HAVING cc IS NOT NULL AND cc != '' "
+                "ORDER BY c DESC LIMIT 10").fetchall()
+        ]
+    except Exception:
+        out["top_countries"] = []
+    # recent scan rounds
+    try:
+        out["recent_rounds"] = [
+            dict(r) for r in conn.execute(
+                "SELECT * FROM scan_rounds ORDER BY round_id DESC LIMIT 5"
+            ).fetchall()
+        ]
+    except Exception:
+        out["recent_rounds"] = []
+    # service distribution
+    try:
+        out["service_dist"] = [
+            {"service": r[0] or "unknown", "count": r[1]}
+            for r in conn.execute(
+                "SELECT service_name, COUNT(*) c FROM hosts WHERE service_name != '' "
+                "GROUP BY service_name ORDER BY c DESC LIMIT 12").fetchall()
+        ]
+    except Exception:
+        out["service_dist"] = []
+    conn.close()
+    return out
+
+
+# ── API: Search ───────────────────────────────────────────────────────────────
+@app.get("/api/search")
+async def api_search(
+    q: str = Query("*", alias="q"),
+    limit: int = Query(50, le=500),
+    mode: str = Query("keyword"),
+    page: int = Query(1, ge=1),
+    facets: str = Query(""),
+):
+    offset = (page - 1) * limit
+    if q == "*" or not q.strip():
+        rows = _db_dict(
+            "SELECT * FROM hosts ORDER BY kev DESC, cvss_max DESC, last_seen DESC "
+            f"LIMIT {limit} OFFSET {offset}")
+    elif mode == "fts":
+        rows = demo.run_fts(q, limit)
+    else:
+        where, params = demo.parse_query(q)
+        rows = _db_dict(
+            f"SELECT * FROM hosts WHERE {where} "
+            f"ORDER BY kev DESC, cvss_max DESC, last_seen DESC "
+            f"LIMIT {limit} OFFSET {offset}", params)
+    rows = [_enrich_row(r) for r in rows]
+    out: dict[str, Any] = {"query": q, "count": len(rows), "results": rows, "page": page}
+    if facets:
+        out["facets"] = {
+            f: demo.run_facets(q if q != "*" else "", f.strip(), 20)
+            for f in facets.split(",") if f.strip()
+        }
+    return out
+
+
+# ── API: Host detail ──────────────────────────────────────────────────────────
+@app.get("/api/host/{ip}")
+async def api_host(ip: str):
+    rows = _db_dict(
+        "SELECT h.*, COALESCE(a.notes,'') notes, COALESCE(a.tags,'') tags, "
+        "COALESCE(a.starred,0) starred "
+        "FROM hosts h LEFT JOIN annotations a ON h.ip=a.ip AND h.port=a.port "
+        "WHERE h.ip=? ORDER BY h.port", (ip,))
+    if not rows:
+        raise HTTPException(404, "Host not found")
+    return [_enrich_row(r) for r in rows]
+
+
+@app.get("/api/host/{ip}/{port}/history")
+async def api_port_history(ip: str, port: int):
+    rows = _db_dict(
+        "SELECT scan_round, seen_at, record_json FROM observations "
+        "WHERE ip=? AND port=? ORDER BY seen_at DESC LIMIT 200", (ip, port))
+    for r in rows:
+        try:
+            r["record"] = json.loads(r["record_json"])
+        except Exception:
+            r["record"] = {}
+    return rows
+
+
+# ── API: CVE lookup ────────────────────────────────────────────────────────────
+@app.get("/api/cve/{cve_id}")
+async def api_cve(cve_id: str):
+    cve_id = cve_id.upper()
+    rows = _db_dict(
+        "SELECT * FROM cve WHERE cve_id=? LIMIT 20", (cve_id,))
+    if not rows:
+        raise HTTPException(404, "CVE not found in local database — run sync-feeds first")
+    kev = _db_one("SELECT * FROM kev WHERE cve_id=?", (cve_id,))
+    epss = _db_one("SELECT * FROM epss WHERE cve_id=?", (cve_id,))
+    # hosts affected
+    affected = _db_dict(
+        "SELECT DISTINCT ip, port, product, version, cvss_max FROM hosts "
+        "WHERE cves LIKE ? LIMIT 100", (f"%{cve_id}%",))
+    return {
+        "cve_id": cve_id,
+        "entries": rows,
+        "kev": kev,
+        "epss": epss,
+        "affected_hosts": affected,
+    }
+
+
+# ── API: Facets ────────────────────────────────────────────────────────────────
+@app.get("/api/facets")
+async def api_facets(
+    q: str = Query(""),
+    fields: str = Query("port,country,product,service"),
+    limit: int = Query(20, le=100),
+):
+    return {
+        f: demo.run_facets(q, f.strip(), limit)
+        for f in fields.split(",") if f.strip()
+    }
+
+
+# ── API: Annotations (notes / tags) ──────────────────────────────────────────
+@app.post("/api/annotate")
+async def api_annotate(request: Request):
+    body = await request.json()
+    ip = body.get("ip", "")
+    port = int(body.get("port", 0))
+    notes = body.get("notes", "")
+    tags = body.get("tags", "")
+    starred = int(bool(body.get("starred", False)))
+    now = datetime.now(timezone.utc).isoformat()
+    conn = demo.db()
+    conn.execute(
+        "INSERT INTO annotations (ip,port,notes,tags,starred,updated_at) VALUES (?,?,?,?,?,?) "
+        "ON CONFLICT(ip,port) DO UPDATE SET notes=excluded.notes, tags=excluded.tags, "
+        "starred=excluded.starred, updated_at=excluded.updated_at",
+        (ip, port, notes, tags, starred, now))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+# ── API: Scan management ───────────────────────────────────────────────────────
+@app.post("/api/scan")
+async def api_scan_start(request: Request, background_tasks: BackgroundTasks):
+    body = await request.json()
+    cidr = body.get("cidr", "")
+    ports_str = body.get("ports", "")
+    name = body.get("name", cidr)
+    if not cidr:
+        raise HTTPException(400, "cidr required")
+    # validate CIDR
+    import ipaddress
+    try:
+        ipaddress.ip_network(cidr, strict=False)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    ports = [int(x) for x in ports_str.split(",") if x.strip()] if ports_str else demo.TOP_PORTS
+    scan_id = str(uuid.uuid4())[:8]
+    q: asyncio.Queue = asyncio.Queue()
+    scan_queues[scan_id] = q
+    active_scans[scan_id] = {
+        "id": scan_id,
+        "name": name,
+        "target": cidr,
+        "ports": ports,
+        "status": "queued",
+        "started": datetime.now(timezone.utc).isoformat(),
+        "finished": None,
+        "found": 0,
+        "error": None,
+        "round_id": None,
+    }
+    background_tasks.add_task(_run_scan, scan_id, cidr, ports)
+    return {"scan_id": scan_id, "status": "queued"}
+
+
+async def _run_scan(scan_id: str, cidr: str, ports: list[int]):
+    import ipaddress as _ip
+    s = active_scans[scan_id]
+    q = scan_queues[scan_id]
+    s["status"] = "running"
+    await q.put({"event": "started", "scan_id": scan_id, "target": cidr})
+    try:
+        nets = [_ip.ip_network(cidr, strict=False)]
+        # Phase 1: discover
+        await q.put({"event": "phase", "phase": "discovery", "target": cidr})
+        found = await demo.discover_asyncio(cidr, ports, nets)
+        await q.put({"event": "discovered", "count": len(found)})
+        s["found"] = len(found)
+        rid = demo.start_round(cidr, ports)
+        s["round_id"] = rid
+        # Phase 2: enrich
+        await q.put({"event": "phase", "phase": "enrichment"})
+        sem = asyncio.Semaphore(32)
+        done_count = 0
+
+        async def _w(ip, port):
+            nonlocal done_count
+            async with sem:
+                await demo.enrich_and_store(ip, port, rid)
+                done_count += 1
+                if done_count % 10 == 0 or done_count == len(found):
+                    await q.put({
+                        "event": "progress",
+                        "done": done_count,
+                        "total": len(found),
+                    })
+
+        await asyncio.gather(*[_w(ip, p) for ip, p in found])
+        demo.finish_round(rid, len(found))
+        s["status"] = "done"
+        s["finished"] = datetime.now(timezone.utc).isoformat()
+        await q.put({"event": "done", "found": len(found), "round_id": rid})
+    except Exception as e:
+        s["status"] = "error"
+        s["error"] = str(e)
+        await q.put({"event": "error", "message": str(e)})
+
+
+@app.get("/api/scans")
+async def api_scans_list():
+    return list(active_scans.values())
+
+
+@app.get("/api/scan/{scan_id}")
+async def api_scan_status(scan_id: str):
+    if scan_id not in active_scans:
+        raise HTTPException(404, "Scan not found")
+    return active_scans[scan_id]
+
+
+@app.delete("/api/scan/{scan_id}")
+async def api_scan_cancel(scan_id: str):
+    if scan_id not in active_scans:
+        raise HTTPException(404, "Scan not found")
+    active_scans[scan_id]["status"] = "cancelled"
+    return {"ok": True}
+
+
+# ── WebSocket: live scan feed ──────────────────────────────────────────────────
+@app.websocket("/ws/scan/{scan_id}")
+async def ws_scan(websocket: WebSocket, scan_id: str):
+    await websocket.accept()
+    if scan_id not in scan_queues:
+        await websocket.send_json({"event": "error", "message": "scan not found"})
+        await websocket.close()
+        return
+    q = scan_queues[scan_id]
+    try:
+        while True:
+            try:
+                msg = await asyncio.wait_for(q.get(), timeout=30)
+                await websocket.send_json(msg)
+                if msg.get("event") in ("done", "error", "cancelled"):
+                    break
+            except asyncio.TimeoutError:
+                await websocket.send_json({"event": "ping"})
+    except WebSocketDisconnect:
+        pass
+
+
+# ── API: Path enumeration ──────────────────────────────────────────────────────
+@app.post("/api/enumerate")
+async def api_enum_start(request: Request, background_tasks: BackgroundTasks):
+    body = await request.json()
+    target_url = body.get("url", "")
+    wordlist_key = body.get("wordlist", "web-common")
+    threads = int(body.get("threads", 20))
+    if not target_url:
+        raise HTTPException(400, "url required")
+    if not target_url.startswith(("http://", "https://")):
+        target_url = "http://" + target_url
+    enum_id = str(uuid.uuid4())[:8]
+    active_enums[enum_id] = {
+        "id": enum_id,
+        "url": target_url,
+        "wordlist": wordlist_key,
+        "status": "queued",
+        "started": datetime.now(timezone.utc).isoformat(),
+        "finished": None,
+        "results": [],
+        "total": 0,
+        "checked": 0,
+    }
+    background_tasks.add_task(_run_enum, enum_id, target_url, wordlist_key, threads)
+    return {"enum_id": enum_id}
+
+
+async def _run_enum(enum_id: str, url: str, wordlist_key: str, threads: int):
+    import urllib.request as ur
+    e = active_enums[enum_id]
+    e["status"] = "running"
+    try:
+        word_lines = await asyncio.to_thread(wordlists.lines, wordlist_key)
+    except Exception as ex:
+        e["status"] = "error"
+        e["error"] = str(ex)
+        return
+    e["total"] = len(word_lines)
+    sem = asyncio.Semaphore(threads)
+    results = []
+
+    async def _check(word: str):
+        nonlocal results
+        path = word.lstrip("/")
+        full = url.rstrip("/") + "/" + path
+        async with sem:
+            try:
+                def _req():
+                    req = ur.Request(full, headers={"User-Agent": "NorthHarv/1.0"})
+                    with ur.urlopen(req, timeout=5) as r:
+                        return r.status, len(r.read(512)), r.headers.get("Content-Type", "")
+                code, size, ctype = await asyncio.to_thread(_req)
+                if code not in (404, 400):
+                    results.append({
+                        "url": full, "status": code, "size": size, "content_type": ctype
+                    })
+            except Exception:
+                pass
+            e["checked"] += 1
+
+    await asyncio.gather(*[_check(w) for w in word_lines])
+    e["results"] = sorted(results, key=lambda x: x["status"])
+    e["status"] = "done"
+    e["finished"] = datetime.now(timezone.utc).isoformat()
+
+
+@app.get("/api/enum/{enum_id}")
+async def api_enum_status(enum_id: str):
+    if enum_id not in active_enums:
+        raise HTTPException(404, "Enumeration not found")
+    return active_enums[enum_id]
+
+
+@app.get("/api/enums")
+async def api_enums_list():
+    return list(active_enums.values())
+
+
+# ── API: Wordlists ─────────────────────────────────────────────────────────────
+@app.get("/api/wordlists")
+async def api_wordlists():
+    return wordlists.all_status()
+
+
+@app.post("/api/wordlists/{key}/fetch")
+async def api_wordlist_fetch(key: str, background_tasks: BackgroundTasks):
+    if key not in wordlists.CATALOG:
+        raise HTTPException(404, "Unknown wordlist")
+    background_tasks.add_task(wordlists.fetch, key, True)
+    return {"ok": True, "key": key, "message": "Download started"}
+
+
+# ── API: Feed sync ─────────────────────────────────────────────────────────────
+_sync_lock = threading.Lock()
+_sync_status: dict[str, Any] = {"running": False, "last": None, "error": None}
+
+
+@app.post("/api/feeds/sync")
+async def api_feeds_sync(request: Request, background_tasks: BackgroundTasks):
+    body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    years = body.get("years", [2023, 2024, 2025, 2026])
+    force = bool(body.get("force", False))
+    if _sync_status["running"]:
+        raise HTTPException(409, "Sync already running")
+    background_tasks.add_task(_run_sync, years, force)
+    return {"ok": True, "message": "Sync started"}
+
+
+def _run_sync(years, force):
+    global _sync_status
+    _sync_status["running"] = True
+    _sync_status["error"] = None
+    try:
+        demo.sync_nvd(years, force)
+        demo.sync_kev()
+        demo.sync_epss()
+        demo.CVE = demo.CveDB()  # reload
+        _sync_status["last"] = datetime.now(timezone.utc).isoformat()
+    except Exception as e:
+        _sync_status["error"] = str(e)
+    finally:
+        _sync_status["running"] = False
+
+
+@app.get("/api/feeds/status")
+async def api_feeds_status():
+    return _sync_status
+
+
+# ── API: Export ────────────────────────────────────────────────────────────────
+@app.get("/api/export")
+async def api_export(
+    q: str = Query(""),
+    fmt: str = Query("json"),
+    limit: int = Query(10000, le=100000),
+):
+    where, params = demo.parse_query(q) if q else ("1=1", [])
+    rows = _db_dict(
+        f"SELECT ip, port, service_name, product, version, banner, "
+        f"http_title, http_server, cvss_max, epss_max, cves, kev, "
+        f"geo_json, tls_json, first_seen, last_seen FROM hosts "
+        f"WHERE {where} ORDER BY cvss_max DESC LIMIT {limit}", params)
+    for r in rows:
+        for f in ("geo_json", "tls_json"):
+            if r.get(f):
+                try:
+                    r[f] = json.loads(r[f])
+                except Exception:
+                    pass
+    if fmt == "csv":
+        output = io.StringIO()
+        fieldnames = ["ip", "port", "service_name", "product", "version",
+                      "http_title", "cvss_max", "cves", "kev", "first_seen", "last_seen"]
+        writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+        return StreamingResponse(
+            io.BytesIO(output.getvalue().encode()),
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=northharv_export.csv"},
+        )
+    return StreamingResponse(
+        io.BytesIO(json.dumps(rows, default=str, indent=2).encode()),
+        media_type="application/json",
+        headers={"Content-Disposition": "attachment; filename=northharv_export.json"},
+    )
+
+
+# ── API: Diff rounds ──────────────────────────────────────────────────────────
+@app.get("/api/diff")
+async def api_diff(a: int = Query(...), b: int = Query(...)):
+    conn = demo.db()
+    conn.row_factory = sqlite3.Row
+    a_rows = conn.execute(
+        "SELECT ip, port, record_json FROM observations WHERE scan_round=? "
+        "GROUP BY ip, port HAVING MAX(seen_at)", (a,)).fetchall()
+    b_rows = conn.execute(
+        "SELECT ip, port, record_json FROM observations WHERE scan_round=? "
+        "GROUP BY ip, port HAVING MAX(seen_at)", (b,)).fetchall()
+    conn.close()
+    A = {(r["ip"], r["port"]): json.loads(r["record_json"]) for r in a_rows}
+    B = {(r["ip"], r["port"]): json.loads(r["record_json"]) for r in b_rows}
+    appeared = [{"ip": ip, "port": p, **B[(ip, p)]} for ip, p in set(B) - set(A)]
+    disappeared = [{"ip": ip, "port": p, **A[(ip, p)]} for ip, p in set(A) - set(B)]
+    changed = []
+    for k in set(A) & set(B):
+        pa, pb = A[k], B[k]
+        diffs = [f for f in ("product", "version", "cves", "http_title", "service_name")
+                 if (pa.get(f) or "") != (pb.get(f) or "")]
+        if diffs:
+            changed.append({"ip": k[0], "port": k[1], "fields": diffs,
+                             "before": pa, "after": pb})
+    return {"round_a": a, "round_b": b,
+            "appeared": appeared, "disappeared": disappeared, "changed": changed}
+
+
+# ── UI Routes ─────────────────────────────────────────────────────────────────
+def _resp(request: Request, name: str, ctx: dict = {}):
+    """TemplateResponse helper compatible with both old and new Starlette."""
+    try:
+        return templates.TemplateResponse(request, name, ctx)
+    except TypeError:
+        return templates.TemplateResponse(name, {"request": request, **ctx})
+
+
+@app.get("/")
+async def ui_index(request: Request):
+    return _resp(request, "index.html")
+
+
+@app.get("/search")
+async def ui_search(request: Request, q: str = Query("")):
+    return _resp(request, "search.html", {"query": q})
+
+
+@app.get("/host/{ip}")
+async def ui_host(request: Request, ip: str):
+    return _resp(request, "host.html", {"ip": ip})
+
+
+@app.get("/scan")
+async def ui_scan(request: Request):
+    return _resp(request, "scan.html")
+
+
+@app.get("/feeds")
+async def ui_feeds(request: Request):
+    return _resp(request, "feeds.html")
+
+
+@app.get("/wordlists")
+async def ui_wordlists(request: Request):
+    return _resp(request, "wordlists.html")
+
+
+@app.get("/cve/{cve_id}")
+async def ui_cve(request: Request, cve_id: str):
+    return _resp(request, "cve.html", {"cve_id": cve_id.upper()})
+
+
+# ── Launch helper ──────────────────────────────────────────────────────────────
+def start_server(port: int = 8080, host: str = "0.0.0.0"):
+    import uvicorn
+    print(f"\n  NorthHarv starting → http://localhost:{port}\n")
+    uvicorn.run(app, host=host, port=port, log_level="info")

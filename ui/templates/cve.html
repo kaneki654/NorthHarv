@@ -1,0 +1,174 @@
+{% extends "base.html" %}
+{% block title %}{{ cve_id }}{% endblock %}
+
+{% block content %}
+<div class="breadcrumb">
+  <a href="/">Home</a>
+  <svg class="icon"><use href="#i-chev-right"/></svg>
+  <span>CVE</span>
+  <svg class="icon"><use href="#i-chev-right"/></svg>
+  <span>{{ cve_id }}</span>
+</div>
+
+<div id="cveBody">
+  <div class="page-header">
+    <div class="page-title">
+      <span class="pt-icon"><svg class="icon"><use href="#i-shield"/></svg></span>
+      {{ cve_id }}
+    </div>
+    <div class="page-sub flex items-center gap-2"><span class="spinner"></span> Reading record…</div>
+  </div>
+  <div class="stats-grid">
+    <div class="stat-tile skeleton" style="height:106px"></div>
+    <div class="stat-tile skeleton" style="height:106px"></div>
+    <div class="stat-tile skeleton" style="height:106px"></div>
+  </div>
+  <div class="skeleton" style="height:116px;margin-bottom:.85rem"></div>
+  <div class="skeleton" style="height:92px"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const CVE_ID = {{ cve_id | tojson }};
+function icon(name) { return `<svg class="icon"><use href="#${name}"/></svg>`; }
+function escHtml(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+async function loadCve() {
+  const data = await fetch(`/api/cve/${CVE_ID}`).then(r => r.json()).catch(() => null);
+  if (!data || data.detail) {
+    document.getElementById('cveBody').innerHTML = `
+      <div class="page-title"><span class="pt-icon">${icon('i-shield')}</span> ${escHtml(CVE_ID)}</div>
+      <div class="empty-state mt-4"><div class="empty-icon">${icon('i-scope')}</div>
+        <h3>Not found in local database</h3>
+        <p>Run <a href="/feeds">feed sync</a> to download the NVD CVE database first.</p></div>`;
+    return;
+  }
+  const entry = data.entries[0] || {};
+  const kev = data.kev;
+  const epss = data.epss;
+  const cvss = entry.cvss || 0;
+  const sevCls = cvss>=9?'badge-critical':cvss>=7?'badge-high':cvss>=4?'badge-medium':cvss>0?'badge-low':'badge-none';
+  const sevName = cvss>=9?'CRITICAL':cvss>=7?'HIGH':cvss>=4?'MEDIUM':cvss>0?'LOW':'N/A';
+
+  /* severity colour coding, driven entirely by design-system variables */
+  const sevVar = cvss >= 9 ? 'var(--critical)'
+               : cvss >= 7 ? 'var(--high)'
+               : cvss >= 4 ? 'var(--medium)'
+               : cvss > 0  ? 'var(--low)'
+               : 'var(--fg-3)';
+
+  document.getElementById('cveBody').innerHTML = `
+    <div class="page-header" style="--sev-c:${sevVar}">
+      <div class="flex items-center gap-3" style="flex-wrap:wrap">
+        <div class="page-title">
+          <span class="pt-icon" style="color:var(--sev-c);background:transparent;border-color:var(--sev-c)">
+            ${icon('i-shield')}
+          </span>
+          ${escHtml(CVE_ID)}
+        </div>
+        <span class="badge ${sevCls}">${sevName}${cvss > 0 ? ' ' + cvss.toFixed(1) : ''}</span>
+        ${kev ? `<span class="badge badge-kev">${icon('i-flame')} CISA KEV</span>` : ''}
+        ${epss ? `<span class="badge badge-high" title="EPSS — probability of exploitation in the next 30 days">${icon('i-activity')} EPSS ${(epss.score*100).toFixed(1)}%</span>` : ''}
+      </div>
+      <div class="page-sub">
+        ${escHtml(entry.vendor || '')}${entry.vendor && entry.product ? ' · ' : ''}${escHtml(entry.product || '')}
+        ${data.entries.length > 1 ? ` · ${data.entries.length} component matches` : ''}
+      </div>
+    </div>
+
+    <!-- Summary cards -->
+    <div class="stats-grid mb-4">
+      <div class="stat-tile ${cvss >= 9 ? 'danger' : cvss >= 7 ? 'warning' : 'primary'}" data-reveal>
+        <div class="stat-head">
+          <div>
+            <div class="stat-label">CVSS Score</div>
+            <div class="stat-value" ${cvss > 0 ? `data-count="${cvss}" data-decimals="1"` : ''}>${cvss > 0 ? '0.0' : '—'}</div>
+          </div>
+          <span class="st-icon">${icon('i-alert')}</span>
+        </div>
+        <div class="stat-sub">${sevName} severity</div>
+      </div>
+      ${epss ? `<div class="stat-tile warning" data-reveal>
+        <div class="stat-head">
+          <div>
+            <div class="stat-label">EPSS Probability</div>
+            <div class="stat-value" data-count="${(epss.score*100).toFixed(1)}" data-decimals="1" data-suffix="%">0.0%</div>
+          </div>
+          <span class="st-icon">${icon('i-activity')}</span>
+        </div>
+        <div class="stat-sub">Percentile ${epss.percentile ? (epss.percentile*100).toFixed(0)+'%' : '—'}</div>
+      </div>` : ''}
+      ${kev ? `<div class="stat-tile danger" data-reveal>
+        <div class="stat-head">
+          <div>
+            <div class="stat-label">CISA KEV Status</div>
+            <div class="stat-value" style="font-size:1.15rem">Exploited</div>
+          </div>
+          <span class="st-icon">${icon('i-flame')}</span>
+        </div>
+        <div class="stat-sub">${kev.date_added ? 'Added ' + escHtml(kev.date_added) : 'In KEV catalogue'}</div>
+      </div>` : ''}
+      <div class="stat-tile violet" data-reveal>
+        <div class="stat-head">
+          <div>
+            <div class="stat-label">Affected Hosts</div>
+            <div class="stat-value" data-count="${(data.affected_hosts||[]).length}">0</div>
+          </div>
+          <span class="st-icon">${icon('i-server')}</span>
+        </div>
+        <div class="stat-sub">Matches in your database</div>
+      </div>
+    </div>
+
+    <!-- Description -->
+    ${entry.description ? `<div class="card mb-3" data-reveal>
+      <div class="card-title"><span class="ct-icon">${icon('i-file-text')}</span> Description</div>
+      <p style="font-size:.9rem;line-height:1.75;color:var(--fg-2)">${escHtml(entry.description)}</p>
+    </div>` : ''}
+
+    <!-- KEV details -->
+    ${kev ? `<div class="card mb-3" data-reveal style="border-left:2px solid var(--danger)">
+      <div class="card-title"><span class="ct-icon" style="color:var(--danger)">${icon('i-flame')}</span> CISA Known Exploited Vulnerability</div>
+      <div class="cert-box">
+        <div class="cert-row"><span class="cert-key">Vulnerability</span><span class="cert-val">${escHtml(kev.name||'—')}</span></div>
+        <div class="cert-row"><span class="cert-key">Vendor/Project</span><span class="cert-val">${escHtml(kev.vendor||'—')}</span></div>
+        <div class="cert-row"><span class="cert-key">Product</span><span class="cert-val">${escHtml(kev.product||'—')}</span></div>
+        <div class="cert-row"><span class="cert-key">Date Added</span><span class="cert-val">${escHtml(kev.date_added||'—')}</span></div>
+        <div class="cert-row"><span class="cert-key">Description</span><span class="cert-val">${escHtml(kev.short_desc||'—')}</span></div>
+      </div>
+    </div>` : ''}
+
+    <!-- CPE matches -->
+    ${data.entries.length > 0 ? `<div class="card mb-3" data-reveal>
+      <div class="card-title"><span class="ct-icon">${icon('i-target')}</span> Affected Components (CPE)</div>
+      <div class="table-scroll"><table class="port-table"><thead><tr>
+        <th>Vendor</th><th>Product</th><th>Ver Start (Incl)</th><th>Ver End (Incl)</th><th>Ver End (Excl)</th>
+      </tr></thead>
+      <tbody>${data.entries.map(e => `<tr>
+        <td>${escHtml(e.vendor||'')}</td>
+        <td>${escHtml(e.product||'')}</td>
+        <td class="text-mono text-sm">${escHtml(e.version_start_incl||'—')}</td>
+        <td class="text-mono text-sm">${escHtml(e.version_end_incl||'—')}</td>
+        <td class="text-mono text-sm">${escHtml(e.version_end_excl||'—')}</td>
+      </tr>`).join('')}</tbody></table></div>
+    </div>` : ''}
+
+    <!-- Affected hosts in DB -->
+    ${data.affected_hosts?.length ? `<div class="card mb-3" data-reveal>
+      <div class="card-title"><span class="ct-icon">${icon('i-server')}</span> Affected Hosts in Your Database</div>
+      <div class="result-list">${data.affected_hosts.map(h => `
+        <a href="/host/${encodeURIComponent(h.ip)}" class="result-row ${h.cvss_max>=9?'sev-critical':h.cvss_max>=7?'sev-high':'sev-medium'}" data-reveal>
+          <span class="result-ip">${escHtml(h.ip)}</span>
+          <span class="result-port">${h.port}</span>
+          <span class="result-service">${escHtml(h.product||'')} ${escHtml(h.version||'')}</span>
+          <span></span>
+          <span class="result-badges">${h.cvss_max > 0 ? `<span class="badge ${h.cvss_max>=9?'badge-critical':h.cvss_max>=7?'badge-high':'badge-medium'}">${h.cvss_max.toFixed(1)}</span>` : ''}</span>
+        </a>`).join('')}
+      </div>
+    </div>` : ''}`;
+}
+
+loadCve();
+</script>
+{% endblock %}

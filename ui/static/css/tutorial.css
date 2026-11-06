@@ -1,0 +1,695 @@
+/* ══════════════════════════════════════════════════════════════════════
+   NorthHarv guided tour — self-contained overlay.
+
+   Everything here is namespaced .nht- and fixed-positioned, so the
+   component can be injected into any page without touching its layout.
+   The palette is deliberately its own: terminal green on near-black,
+   so the tour reads as a layer above the app rather than part of it.
+   ══════════════════════════════════════════════════════════════════ */
+
+.nht-root {
+  --nht-bg:      #0d1117;
+  --nht-panel:   #11161e;
+  --nht-line:    #1f2a37;
+  --nht-green:   #3fb950;
+  --nht-blue:    #58a6ff;
+  --nht-red:     #ff7b72;
+  --nht-orange:  #f0883e;
+  --nht-text:    #d7e2ee;
+  --nht-dim:     #7d8ea3;
+  --nht-mono:    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+                 "Liberation Mono", monospace;
+  --nht-ease:    cubic-bezier(.4, 0, .2, 1);
+  --nht-step:    300ms;
+
+  position: fixed;
+  inset: 0;
+  z-index: 2147483000;
+  font-family: var(--nht-mono);
+  color: var(--nht-text);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 260ms var(--nht-ease);
+}
+.nht-root.nht-on { opacity: 1; }
+.nht-root * { box-sizing: border-box; }
+
+/* ── Backdrop + spotlight ──────────────────────────────────────────
+   One element does both: an enormous spread box-shadow paints the
+   scrim everywhere except inside the box, so the "cut-out" follows
+   the element with a plain transition on position and size.        */
+.nht-spot {
+  position: fixed;
+  top: 50%; left: 50%;
+  width: 0; height: 0;
+  border-radius: 12px;
+  box-shadow: 0 0 0 9999px rgba(3, 6, 11, .82);
+  outline: 1px solid rgba(63, 185, 80, .55);
+  pointer-events: none;
+  transition: top var(--nht-step) var(--nht-ease),
+              left var(--nht-step) var(--nht-ease),
+              width var(--nht-step) var(--nht-ease),
+              height var(--nht-step) var(--nht-ease),
+              border-radius var(--nht-step) var(--nht-ease);
+}
+.nht-spot::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: inherit;
+  border: 1px solid rgba(63, 185, 80, .32);
+  animation: nhtHalo 2.1s var(--nht-ease) infinite;
+}
+@keyframes nhtHalo {
+  0%   { transform: scale(1);     opacity: .9; }
+  70%  { transform: scale(1.035); opacity: 0; }
+  100% { transform: scale(1.035); opacity: 0; }
+}
+
+/* corner ticks, so the cut-out reads as a targeting reticle */
+.nht-tick {
+  position: fixed;
+  width: 14px; height: 14px;
+  border: 2px solid var(--nht-green);
+  pointer-events: none;
+  opacity: .9;
+  transition: top var(--nht-step) var(--nht-ease),
+              left var(--nht-step) var(--nht-ease);
+}
+.nht-tick.tl { border-right: 0; border-bottom: 0; }
+.nht-tick.tr { border-left: 0;  border-bottom: 0; }
+.nht-tick.bl { border-right: 0; border-top: 0; }
+.nht-tick.br { border-left: 0;  border-top: 0; }
+
+/* ── Scan lines ────────────────────────────────────────────────── */
+.nht-scan {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: .5;
+  background: repeating-linear-gradient(
+    180deg,
+    rgba(63, 185, 80, .045) 0px,
+    rgba(63, 185, 80, .045) 1px,
+    transparent 1px,
+    transparent 4px);
+  mix-blend-mode: screen;
+}
+.nht-sweep {
+  position: fixed;
+  left: 0; right: 0;
+  height: 190px;
+  pointer-events: none;
+  background: linear-gradient(180deg,
+    transparent, rgba(63, 185, 80, .07) 48%, rgba(63, 185, 80, .14) 50%,
+    rgba(63, 185, 80, .07) 52%, transparent);
+  animation: nhtSweep 7s linear infinite;
+}
+@keyframes nhtSweep {
+  0%   { top: -200px; }
+  100% { top: 100%; }
+}
+
+/* ── Connector from the card to the spotlight ──────────────────── */
+.nht-link {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  overflow: visible;
+}
+.nht-link .nht-wire {
+  fill: none;
+  stroke: var(--nht-green);
+  stroke-width: 1.6;
+  stroke-dasharray: 5 4;
+  opacity: .85;
+  animation: nhtDash 1s linear infinite;
+}
+@keyframes nhtDash { to { stroke-dashoffset: -18; } }
+/* the arrowhead is filled, so it must not inherit the wire's stroke rules */
+.nht-link .nht-head-tri { fill: var(--nht-green); stroke: none; }
+
+/* ── The step card ─────────────────────────────────────────────── */
+.nht-card {
+  position: fixed;
+  width: min(430px, calc(100vw - 32px));
+  border: 1px solid var(--nht-line);
+  border-radius: 12px;
+  background: linear-gradient(180deg, #121823, var(--nht-panel));
+  box-shadow: 0 24px 60px rgba(0, 0, 0, .66),
+              0 0 0 1px rgba(63, 185, 80, .14),
+              0 0 36px rgba(63, 185, 80, .09);
+  pointer-events: auto;
+  transition: top var(--nht-step) var(--nht-ease),
+              left var(--nht-step) var(--nht-ease);
+}
+.nht-card-in { animation: nhtCardIn 280ms var(--nht-ease) both; }
+@keyframes nhtCardIn {
+  from { opacity: 0; transform: translateY(8px) scale(.985); }
+  to   { opacity: 1; transform: none; }
+}
+
+.nht-head {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  padding: .62rem .8rem;
+  border-bottom: 1px solid var(--nht-line);
+  background: rgba(63, 185, 80, .05);
+  border-radius: 12px 12px 0 0;
+}
+.nht-dots { display: flex; gap: 5px; }
+.nht-dots i {
+  width: 9px; height: 9px;
+  border-radius: 50%;
+  background: #2b3542;
+}
+.nht-dots i:first-child  { background: #ff5f57; }
+.nht-dots i:nth-child(2) { background: #febc2e; }
+.nht-dots i:nth-child(3) { background: var(--nht-green); }
+.nht-crumb {
+  font-size: .68rem;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--nht-dim);
+}
+.nht-crumb b { color: var(--nht-green); font-weight: 600; }
+.nht-x {
+  margin-left: auto;
+  padding: .18rem .5rem;
+  border: 1px solid var(--nht-line);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--nht-dim);
+  font-family: inherit;
+  font-size: .66rem;
+  letter-spacing: .05em;
+  cursor: pointer;
+  transition: all 160ms var(--nht-ease);
+}
+.nht-x:hover { color: var(--nht-red); border-color: rgba(255, 123, 114, .5); }
+
+.nht-body { padding: .9rem .95rem 1rem; }
+.nht-no {
+  display: inline-block;
+  margin-bottom: .45rem;
+  padding: .1rem .42rem;
+  border: 1px solid rgba(63, 185, 80, .38);
+  border-radius: 4px;
+  background: rgba(63, 185, 80, .1);
+  color: var(--nht-green);
+  font-size: .64rem;
+  letter-spacing: .09em;
+}
+.nht-title {
+  margin: 0 0 .4rem;
+  font-size: 1.01rem;
+  font-weight: 650;
+  letter-spacing: -.01em;
+  color: #fff;
+}
+.nht-title::before { content: "> "; color: var(--nht-green); }
+.nht-text {
+  margin: 0;
+  font-size: .78rem;
+  line-height: 1.62;
+  color: var(--nht-dim);
+}
+.nht-text b { color: var(--nht-text); font-weight: 600; }
+.nht-text code {
+  padding: .05rem .3rem;
+  border-radius: 3px;
+  background: rgba(88, 166, 255, .12);
+  color: var(--nht-blue);
+  font-size: .73rem;
+}
+.nht-where {
+  display: inline-flex;
+  align-items: center;
+  gap: .34rem;
+  margin-top: .7rem;
+  padding: .22rem .5rem;
+  border: 1px solid var(--nht-line);
+  border-radius: 5px;
+  background: rgba(88, 166, 255, .07);
+  color: var(--nht-blue);
+  font-size: .7rem;
+  text-decoration: none;
+  transition: all 160ms var(--nht-ease);
+}
+.nht-where:hover { border-color: rgba(88, 166, 255, .5); background: rgba(88, 166, 255, .14); }
+.nht-where.live { color: var(--nht-green); background: rgba(63, 185, 80, .08); }
+
+/* ── Foot: progress + buttons ──────────────────────────────────── */
+.nht-foot {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  padding: .62rem .8rem;
+  border-top: 1px solid var(--nht-line);
+}
+.nht-pips { display: flex; gap: 5px; margin-right: auto; }
+.nht-pips button {
+  width: 7px; height: 7px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: #2b3542;
+  cursor: pointer;
+  transition: all 220ms var(--nht-ease);
+}
+.nht-pips button.done { background: rgba(63, 185, 80, .45); }
+.nht-pips button.now {
+  width: 20px;
+  border-radius: 4px;
+  background: var(--nht-green);
+  box-shadow: 0 0 9px rgba(63, 185, 80, .55);
+}
+.nht-btn {
+  padding: .34rem .78rem;
+  border: 1px solid var(--nht-line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--nht-text);
+  font-family: inherit;
+  font-size: .73rem;
+  cursor: pointer;
+  transition: all 160ms var(--nht-ease);
+}
+.nht-btn:hover:not(:disabled) { border-color: #38506a; background: rgba(88, 166, 255, .08); }
+.nht-btn:disabled { opacity: .35; cursor: not-allowed; }
+.nht-btn.go {
+  border-color: rgba(63, 185, 80, .5);
+  background: rgba(63, 185, 80, .14);
+  color: var(--nht-green);
+  font-weight: 600;
+}
+.nht-btn.go:hover { background: rgba(63, 185, 80, .24); box-shadow: 0 0 14px rgba(63, 185, 80, .25); }
+.nht-btn:focus-visible { outline: 2px solid var(--nht-green); outline-offset: 2px; }
+
+/* ══ The stage ═══════════════════════════════════════════════════
+   A miniature of the real screen, animated for the step. It exists
+   because most of what a tour needs to show is a sequence — a host
+   arriving, a query being typed, a tab switching — which cannot be
+   performed on the live page without actually doing it. The stage
+   is always labelled as a demonstration.                          */
+.nht-stage {
+  position: fixed;
+  width: min(560px, calc(100vw - 32px));
+  border: 1px solid var(--nht-line);
+  border-radius: 11px;
+  background: var(--nht-bg);
+  box-shadow: 0 20px 54px rgba(0, 0, 0, .6), 0 0 0 1px rgba(63, 185, 80, .1);
+  overflow: hidden;
+  pointer-events: auto;
+  transition: top var(--nht-step) var(--nht-ease), left var(--nht-step) var(--nht-ease);
+}
+.nht-stage-in { animation: nhtCardIn 300ms var(--nht-ease) both; }
+.nht-stage-bar {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  padding: .42rem .7rem;
+  border-bottom: 1px solid var(--nht-line);
+  background: #0a0e15;
+  font-size: .68rem;
+  color: var(--nht-dim);
+}
+.nht-stage-path { color: var(--nht-blue); }
+.nht-stage-tag {
+  margin-left: auto;
+  padding: .06rem .36rem;
+  border: 1px solid rgba(240, 136, 62, .4);
+  border-radius: 3px;
+  color: var(--nht-orange);
+  font-size: .6rem;
+  letter-spacing: .08em;
+}
+.nht-stage-body { padding: .75rem .8rem; min-height: 132px; }
+
+/* shared stage atoms */
+.nht-b {
+  display: inline-flex;
+  align-items: center;
+  gap: .22rem;
+  padding: .05rem .34rem;
+  border-radius: 3px;
+  border: 1px solid transparent;
+  font-size: .62rem;
+  white-space: nowrap;
+}
+.nht-b.g { background: rgba(63,185,80,.14);  border-color: rgba(63,185,80,.4);  color: var(--nht-green); }
+.nht-b.b { background: rgba(88,166,255,.13); border-color: rgba(88,166,255,.38); color: var(--nht-blue); }
+.nht-b.r { background: rgba(255,123,114,.14);border-color: rgba(255,123,114,.42);color: var(--nht-red); }
+.nht-b.o { background: rgba(240,136,62,.14); border-color: rgba(240,136,62,.4);  color: var(--nht-orange); }
+.nht-b.n { background: rgba(125,142,163,.12);border-color: rgba(125,142,163,.3); color: var(--nht-dim); }
+
+.nht-caret {
+  display: inline-block;
+  width: 7px; height: 1.02em;
+  margin-left: 1px;
+  vertical-align: text-bottom;
+  background: var(--nht-green);
+  animation: nhtBlink 1.05s steps(1) infinite;
+}
+@keyframes nhtBlink { 0%, 50% { opacity: 1; } 51%, 100% { opacity: 0; } }
+
+.nht-pop { animation: nhtPop 360ms var(--nht-ease) both; }
+@keyframes nhtPop {
+  from { opacity: 0; transform: translateY(7px); }
+  to   { opacity: 1; transform: none; }
+}
+.nht-flash { animation: nhtFlash 900ms var(--nht-ease) both; }
+@keyframes nhtFlash {
+  0%   { background: rgba(63,185,80,.3);  box-shadow: inset 2px 0 0 var(--nht-green); }
+  100% { background: transparent;          box-shadow: inset 2px 0 0 transparent; }
+}
+
+/* 1 + 9 — daemon bar */
+.nht-daemon {
+  display: flex;
+  align-items: center;
+  gap: .55rem;
+  padding: .52rem .6rem;
+  border: 1px solid var(--nht-line);
+  border-radius: 7px;
+  background: #0a0e15;
+  font-size: .72rem;
+}
+.nht-live {
+  width: 8px; height: 8px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--nht-green);
+  box-shadow: 0 0 0 0 rgba(63,185,80,.65);
+  animation: nhtLive 1.9s var(--nht-ease) infinite;
+}
+@keyframes nhtLive {
+  0%   { box-shadow: 0 0 0 0 rgba(63,185,80,.6); }
+  70%  { box-shadow: 0 0 0 8px rgba(63,185,80,0); }
+  100% { box-shadow: 0 0 0 0 rgba(63,185,80,0); }
+}
+.nht-dgrid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: .1rem .7rem;
+  margin-top: .6rem;
+}
+.nht-dgrid div { padding: .34rem 0; border-bottom: 1px solid rgba(31,42,55,.7); }
+.nht-dgrid span { display: block; font-size: .58rem; letter-spacing: .07em;
+                  text-transform: uppercase; color: var(--nht-dim); }
+.nht-dgrid b { font-size: .78rem; font-weight: 600; color: var(--nht-text); }
+.nht-dgrid b.t { color: var(--nht-green); }
+
+/* 2 — search */
+.nht-sbox {
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+  padding: .44rem .6rem;
+  border: 1px solid var(--nht-line);
+  border-radius: 7px;
+  background: #0a0e15;
+  font-size: .8rem;
+  transition: border-color 220ms var(--nht-ease), box-shadow 220ms var(--nht-ease);
+}
+.nht-sbox.focus {
+  border-color: rgba(63,185,80,.55);
+  box-shadow: 0 0 0 3px rgba(63,185,80,.12);
+}
+.nht-sbox .q { color: var(--nht-blue); }
+.nht-count { margin: .55rem 0 .4rem; font-size: .7rem; color: var(--nht-dim); }
+.nht-count b { color: var(--nht-green); }
+.nht-rows { display: flex; flex-direction: column; gap: 3px; }
+.nht-row {
+  display: grid;
+  grid-template-columns: 112px 58px 1fr auto;
+  gap: .5rem;
+  align-items: center;
+  padding: .36rem .5rem;
+  border: 1px solid rgba(31,42,55,.8);
+  border-left: 2px solid var(--nht-line);
+  border-radius: 5px;
+  background: #0a0e15;
+  font-size: .68rem;
+}
+.nht-row .ip  { color: var(--nht-blue); }
+.nht-row .pt  { color: var(--nht-text); }
+.nht-row .sv  { color: var(--nht-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nht-row.hot  { border-left-color: var(--nht-red); }
+.nht-row.warm { border-left-color: var(--nht-orange); }
+
+/* 3 — host hero + gauge + tabs */
+.nht-hero { display: flex; align-items: center; gap: .8rem; }
+.nht-hero .ip { font-size: 1.12rem; font-weight: 650; color: #fff; }
+.nht-hero .meta { font-size: .66rem; color: var(--nht-dim); line-height: 1.7; }
+.nht-gauge { margin-left: auto; position: relative; width: 74px; height: 74px; flex: none; }
+.nht-gauge svg { transform: rotate(-90deg); }
+.nht-gauge circle { fill: none; stroke-width: 7; stroke-linecap: round; }
+.nht-gauge .bg { stroke: #1b2430; }
+.nht-gauge .fg { stroke: var(--nht-orange); transition: stroke-dashoffset 1.3s var(--nht-ease); }
+.nht-gauge .val {
+  position: absolute; inset: 0;
+  display: grid; place-items: center;
+  font-size: .96rem; font-weight: 650; color: var(--nht-orange);
+}
+.nht-tabs {
+  display: flex; gap: .3rem;
+  margin-top: .7rem;
+  padding-bottom: .4rem;
+  border-bottom: 1px solid var(--nht-line);
+  overflow: hidden;
+}
+.nht-tab {
+  padding: .24rem .5rem;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  font-size: .66rem;
+  color: var(--nht-dim);
+  white-space: nowrap;
+  transition: all 260ms var(--nht-ease);
+}
+.nht-tab.on {
+  border-color: rgba(63,185,80,.42);
+  background: rgba(63,185,80,.12);
+  color: var(--nht-green);
+}
+
+/* 4 — port table */
+.nht-ptable { width: 100%; border-collapse: collapse; font-size: .66rem; }
+.nht-ptable th {
+  padding: .3rem .4rem;
+  border-bottom: 1px solid var(--nht-line);
+  color: var(--nht-dim);
+  font-weight: 500;
+  text-align: left;
+  letter-spacing: .05em;
+}
+.nht-ptable td { padding: .34rem .4rem; border-bottom: 1px solid rgba(31,42,55,.55); }
+.nht-ptable .p { color: var(--nht-green); }
+.nht-ptable .bn { color: var(--nht-dim); font-size: .62rem; }
+
+/* 5 — CVE cards */
+.nht-cve {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  padding: .4rem .55rem;
+  margin-bottom: 4px;
+  border: 1px solid rgba(31,42,55,.9);
+  border-left: 3px solid var(--nht-orange);
+  border-radius: 5px;
+  background: #0a0e15;
+  font-size: .68rem;
+}
+.nht-cve.crit { border-left-color: var(--nht-red); }
+.nht-cve.med  { border-left-color: #d4a72c; }
+.nht-cve .id  { color: var(--nht-blue); }
+.nht-cve .sp  { margin-left: auto; display: flex; gap: .3rem; align-items: center; }
+
+/* 6 — enumerate */
+.nht-bar {
+  height: 5px;
+  border-radius: 3px;
+  background: #1b2430;
+  overflow: hidden;
+}
+.nht-bar i {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--nht-green), #7ee787);
+  box-shadow: 0 0 10px rgba(63,185,80,.5);
+  transition: width 420ms var(--nht-ease);
+}
+.nht-hit {
+  display: grid;
+  grid-template-columns: 46px 1fr auto;
+  gap: .5rem;
+  padding: .28rem .45rem;
+  border-bottom: 1px solid rgba(31,42,55,.5);
+  font-size: .66rem;
+}
+.nht-hit .c200 { color: var(--nht-green); }
+.nht-hit .c301 { color: var(--nht-blue); }
+.nht-hit .c403 { color: var(--nht-orange); }
+.nht-hit .path { color: var(--nht-text); }
+
+/* 7 — scan form + terminal */
+.nht-field { margin-bottom: .45rem; }
+.nht-field span {
+  display: block;
+  margin-bottom: .18rem;
+  font-size: .6rem;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--nht-dim);
+}
+.nht-field div {
+  padding: .3rem .5rem;
+  border: 1px solid var(--nht-line);
+  border-radius: 5px;
+  background: #0a0e15;
+  font-size: .72rem;
+  color: var(--nht-text);
+  min-height: 26px;
+}
+.nht-field.lit div { border-color: rgba(63,185,80,.5); box-shadow: 0 0 0 3px rgba(63,185,80,.1); }
+.nht-warn {
+  display: flex;
+  gap: .45rem;
+  padding: .42rem .55rem;
+  margin-bottom: .55rem;
+  border: 1px solid rgba(255,123,114,.38);
+  border-left: 3px solid var(--nht-red);
+  border-radius: 5px;
+  background: rgba(255,123,114,.07);
+  font-size: .66rem;
+  line-height: 1.5;
+  color: #ffc9c5;
+}
+.nht-warn.pulse { animation: nhtWarn 1.1s var(--nht-ease) 2; }
+@keyframes nhtWarn {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255,123,114,0); }
+  50%      { box-shadow: 0 0 0 4px rgba(255,123,114,.18); }
+}
+.nht-term {
+  padding: .5rem .6rem;
+  border: 1px solid var(--nht-line);
+  border-radius: 6px;
+  background: #06090e;
+  font-size: .66rem;
+  line-height: 1.72;
+  min-height: 96px;
+}
+.nht-term p { margin: 0; color: var(--nht-dim); }
+.nht-term p .ok { color: var(--nht-green); }
+.nht-term p .w  { color: var(--nht-orange); }
+.nht-term p .i  { color: var(--nht-blue); }
+
+/* 8 — diff tiles */
+.nht-tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: .5rem; margin-top: .6rem; }
+.nht-tile {
+  padding: .5rem .55rem;
+  border: 1px solid var(--nht-line);
+  border-radius: 7px;
+  background: #0a0e15;
+  text-align: center;
+}
+.nht-tile b { display: block; font-size: 1.3rem; font-weight: 650; line-height: 1.2; }
+.nht-tile span { font-size: .58rem; letter-spacing: .07em; text-transform: uppercase; color: var(--nht-dim); }
+.nht-tile.up b   { color: var(--nht-green); }
+.nht-tile.down b { color: var(--nht-red); }
+.nht-tile.chg b  { color: var(--nht-orange); }
+
+/* ── Finish screen ─────────────────────────────────────────────── */
+.nht-done {
+  position: fixed;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(430px, calc(100vw - 32px));
+  padding: 2rem 1.6rem 1.5rem;
+  border: 1px solid rgba(63,185,80,.3);
+  border-radius: 14px;
+  background: linear-gradient(180deg, #101a14, var(--nht-panel));
+  box-shadow: 0 30px 80px rgba(0,0,0,.7), 0 0 60px rgba(63,185,80,.14);
+  text-align: center;
+  pointer-events: auto;
+  animation: nhtCardIn 420ms var(--nht-ease) both;
+}
+.nht-done h2 {
+  margin: 0 0 .5rem;
+  font-size: 1.32rem;
+  font-weight: 650;
+  color: var(--nht-green);
+  text-shadow: 0 0 22px rgba(63,185,80,.45);
+}
+.nht-done p { margin: 0 0 1.1rem; font-size: .78rem; line-height: 1.65; color: var(--nht-dim); }
+.nht-prompt {
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
+  margin-bottom: 1.1rem;
+  padding: .5rem .8rem;
+  border: 1px solid rgba(63,185,80,.26);
+  border-radius: 7px;
+  background: #06090e;
+  font-size: .82rem;
+  color: var(--nht-green);
+}
+.nht-prompt i {
+  width: 9px; height: 1.08em;
+  background: var(--nht-green);
+  box-shadow: 0 0 12px rgba(63,185,80,.85);
+  animation: nhtBlink 1.05s steps(1) infinite;
+}
+.nht-done-acts { display: flex; gap: .5rem; justify-content: center; }
+
+/* ── Launcher pill (always-available re-entry) ─────────────────── */
+.nht-launch {
+  display: inline-flex;
+  align-items: center;
+  gap: .34rem;
+  padding: .26rem .56rem;
+  border: 1px solid rgba(63,185,80,.32);
+  border-radius: 6px;
+  background: rgba(63,185,80,.08);
+  color: #3fb950;
+  font-family: var(--font-mono, monospace);
+  font-size: .7rem;
+  cursor: pointer;
+  transition: all 160ms cubic-bezier(.4, 0, .2, 1);
+}
+.nht-launch:hover {
+  background: rgba(63,185,80,.17);
+  border-color: rgba(63,185,80,.55);
+  box-shadow: 0 0 14px rgba(63,185,80,.22);
+}
+.nht-launch .icon { width: 13px; height: 13px; }
+
+/* ── Narrow screens ────────────────────────────────────────────── */
+@media (max-width: 760px) {
+  .nht-card, .nht-stage {
+    left: 16px !important;
+    right: 16px;
+    width: auto;
+  }
+  .nht-stage { top: 14px !important; }
+  .nht-card  { top: auto !important; bottom: 14px; }
+  .nht-link, .nht-tick { display: none; }
+  .nht-dgrid { grid-template-columns: repeat(2, 1fr); }
+  .nht-row   { grid-template-columns: 1fr auto; }
+  .nht-row .sv, .nht-row .pt { display: none; }
+}
+
+/* ── Reduced motion: keep the meaning, drop the movement ───────── */
+@media (prefers-reduced-motion: reduce) {
+  .nht-root, .nht-root * {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+  .nht-sweep { display: none; }
+  .nht-caret, .nht-prompt i { animation: none !important; opacity: 1; }
+}

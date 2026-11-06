@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+{% block title %}Timeline{% endblock %}
+
+{% block head %}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="page-title">
+    <span class="pt-icon"><svg class="icon"><use href="#i-clock"/></svg></span>
+    Scan Timeline
+  </div>
+  <div class="page-sub">Hosts discovered per scan round over time.</div>
+</div>
+
+<div class="stats-grid" id="timelineStats">
+  <div class="stat-tile skeleton" style="height:96px"></div>
+  <div class="stat-tile skeleton" style="height:96px"></div>
+  <div class="stat-tile skeleton" style="height:96px"></div>
+</div>
+
+<div class="card mb-4" data-reveal>
+  <div class="card-title">
+    <span class="ct-icon"><svg class="icon"><use href="#i-activity"/></svg></span>
+    Discovery over time
+  </div>
+  <div class="chart-box" style="height:300px"><canvas id="timelineChart"></canvas></div>
+</div>
+
+<div class="card" data-reveal>
+  <div class="card-title">
+    <span class="ct-icon"><svg class="icon"><use href="#i-clipboard"/></svg></span>
+    Scan rounds
+  </div>
+  <div class="table-scroll">
+    <table class="port-table">
+      <thead><tr>
+        <th>Round</th><th>Target</th><th>Ports</th>
+        <th>Found</th><th>Started</th><th>Duration</th>
+      </tr></thead>
+      <tbody id="roundRows">
+        <tr><td colspan="6" class="text-dim"><span class="spinner"></span> Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function icon(n) { return `<svg class="icon"><use href="#${n}"/></svg>`; }
+function escHtml(s) {
+  return (s == null ? '' : String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function duration(a, b) {
+  if (!a || !b) return '—';
+  const d = (new Date(b) - new Date(a)) / 1000;
+  if (!isFinite(d) || d < 0) return '—';
+  if (d < 60) return Math.round(d) + 's';
+  if (d < 3600) return Math.round(d / 60) + 'm';
+  return (d / 3600).toFixed(1) + 'h';
+}
+
+async function loadTimeline() {
+  const rounds = await fetch('/api/timeline').then(r => r.json()).catch(() => []);
+
+  const total = rounds.reduce((a, r) => a + (r.total_found || 0), 0);
+  const biggest = rounds.reduce((a, r) => Math.max(a, r.total_found || 0), 0);
+  document.getElementById('timelineStats').innerHTML = `
+    <div class="stat-tile primary" data-reveal>
+      <div class="stat-head"><div>
+        <div class="stat-label">Scan rounds</div>
+        <div class="stat-value" data-count="${rounds.length}">0</div></div>
+        <span class="st-icon">${icon('i-bolt')}</span></div>
+      <div class="stat-sub">Recorded in the database</div>
+    </div>
+    <div class="stat-tile success" data-reveal>
+      <div class="stat-head"><div>
+        <div class="stat-label">Services found</div>
+        <div class="stat-value" data-count="${total}">0</div></div>
+        <span class="st-icon">${icon('i-server')}</span></div>
+      <div class="stat-sub">Across every round</div>
+    </div>
+    <div class="stat-tile violet" data-reveal>
+      <div class="stat-head"><div>
+        <div class="stat-label">Largest round</div>
+        <div class="stat-value" data-count="${biggest}">0</div></div>
+        <span class="st-icon">${icon('i-layers')}</span></div>
+      <div class="stat-sub">Peak discovery in one pass</div>
+    </div>`;
+
+  const tbody = document.getElementById('roundRows');
+  tbody.innerHTML = rounds.length ? rounds.slice().reverse().map(r => `
+    <tr>
+      <td class="text-mono text-sm text-primary">#${r.round_id}</td>
+      <td class="text-mono text-sm">${escHtml(r.target)}</td>
+      <td class="text-xs text-dim">${escHtml(r.ports)}</td>
+      <td class="text-mono">${(r.total_found || 0).toLocaleString()}</td>
+      <td class="text-xs text-dim text-mono">${escHtml((r.started_at || '').slice(0,19).replace('T',' '))}</td>
+      <td class="text-xs text-dim">${duration(r.started_at, r.finished_at)}</td>
+    </tr>`).join('')
+    : '<tr><td colspan="6" class="text-dim">No scan rounds recorded yet.</td></tr>';
+
+  const el = document.getElementById('timelineChart');
+  if (!rounds.length || !window.Chart) {
+    if (el && el.parentElement) {
+      el.parentElement.innerHTML =
+        `<div class="empty-state"><div class="empty-icon">${icon('i-activity')}</div>
+           <h3>No rounds yet</h3><p><a href="/scan">Run a scan</a> to build a timeline.</p></div>`;
+    }
+    return;
+  }
+
+  const ctx = el.getContext('2d');
+  const grad = ctx.createLinearGradient(0, 0, 0, 300);
+  grad.addColorStop(0, 'rgba(88,166,255,.42)');
+  grad.addColorStop(1, 'rgba(88,166,255,0)');
+
+  new Chart(el, {
+    type: 'line',
+    data: {
+      labels: rounds.map(r => (r.started_at || '').slice(0, 10)),
+      datasets: [{
+        label: 'Services found',
+        data: rounds.map(r => r.total_found || 0),
+        borderColor: '#58a6ff',
+        backgroundColor: grad,
+        fill: true,
+        tension: .32,
+        pointRadius: 5,
+        pointBackgroundColor: '#58a6ff',
+        pointBorderColor: 'rgba(8,11,18,.9)',
+        pointBorderWidth: 2,
+        pointHoverRadius: 7,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: 'rgba(13,17,23,.96)',
+          borderColor: 'rgba(88,166,255,.35)',
+          borderWidth: 1,
+          titleColor: '#e6edf3',
+          bodyColor: '#8d99a8',
+          padding: 11,
+          cornerRadius: 8,
+          displayColors: false,
+          callbacks: {
+            title: items => 'Round #' + rounds[items[0].dataIndex].round_id,
+            label: item => [
+              'Target: ' + (rounds[item.dataIndex].target || '—'),
+              'Found: ' + item.parsed.y + ' services',
+            ],
+          }
+        }
+      },
+      scales: {
+        x: { ticks: { color: '#8d99a8' }, grid: { color: 'rgba(139,170,214,.07)' }, border: { display: false } },
+        y: { beginAtZero: true, ticks: { color: '#8d99a8', precision: 0 },
+             grid: { color: 'rgba(139,170,214,.07)' }, border: { display: false } },
+      }
+    }
+  });
+}
+
+loadTimeline();
+</script>
+{% endblock %}

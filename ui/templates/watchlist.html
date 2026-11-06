@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+{% block title %}Watchlist{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="page-title">
+    <span class="pt-icon"><svg class="icon"><use href="#i-star"/></svg></span>
+    Watchlist
+  </div>
+  <div class="page-sub">Saved queries with live hit counts, re-evaluated on every visit.</div>
+</div>
+
+<div class="card mb-4" data-reveal>
+  <div class="card-title">
+    <span class="ct-icon"><svg class="icon"><use href="#i-sparkles"/></svg></span>
+    Add a pattern
+  </div>
+  <form class="wl-form" id="wlForm">
+    <div>
+      <label class="form-label" for="wlLabel">Label</label>
+      <input class="form-input" id="wlLabel" placeholder="AWS servers"
+             style="font-family:var(--font-sans)">
+    </div>
+    <div>
+      <label class="form-label" for="wlPattern">Query pattern</label>
+      <input class="form-input" id="wlPattern" placeholder="cloud:AWS" required>
+    </div>
+    <div>
+      <label class="form-label" for="wlType">Type</label>
+      <select class="form-select" id="wlType" style="font-family:var(--font-sans)">
+        <option value="query">Query</option>
+        <option value="risk">Risk</option>
+        <option value="cloud">Cloud</option>
+        <option value="tag">Tag</option>
+        <option value="tech">Technology</option>
+        <option value="geo">Geography</option>
+      </select>
+    </div>
+    <button class="btn btn-primary" type="submit">
+      <svg class="icon"><use href="#i-check"/></svg> Save
+    </button>
+  </form>
+  <div class="form-hint mt-2">
+    Any search operator works — <code class="text-mono">kev:true</code>,
+    <code class="text-mono">risk:900</code>, <code class="text-mono">tech:Jenkins</code>,
+    <code class="text-mono">country:DE port:3389</code>.
+  </div>
+</div>
+
+<div class="card" data-reveal>
+  <div class="card-title flex justify-between items-center">
+    <span class="flex items-center gap-2">
+      <span class="ct-icon"><svg class="icon"><use href="#i-list"/></svg></span>
+      Saved patterns
+    </span>
+    <button class="btn btn-ghost btn-xs" onclick="loadWatchlist()">
+      <svg class="icon"><use href="#i-refresh"/></svg> Recount
+    </button>
+  </div>
+  <div class="table-scroll">
+    <table class="port-table">
+      <thead><tr>
+        <th>Label</th><th>Pattern</th><th>Type</th><th>Hits</th><th>Added</th><th>Actions</th>
+      </tr></thead>
+      <tbody id="wlRows">
+        <tr><td colspan="6" class="text-dim"><span class="spinner"></span> Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function icon(n) { return `<svg class="icon"><use href="#${n}"/></svg>`; }
+function escHtml(s) {
+  return (s == null ? '' : String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function attr(s) { return escHtml(s).replace(/"/g, '&quot;'); }
+
+async function loadWatchlist() {
+  const rows = await fetch('/api/watchlist/hits').then(r => r.json()).catch(() => null);
+  const tbody = document.getElementById('wlRows');
+  if (!rows) {
+    tbody.innerHTML = '<tr><td colspan="6" class="text-dim">Could not load the watchlist.</td></tr>';
+    return;
+  }
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="6">
+      <div class="empty-state"><div class="empty-icon">${icon('i-star')}</div>
+        <h3>No saved patterns</h3><p>Add one above to track it over time.</p></div></td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map(r => `
+    <tr>
+      <td><strong>${escHtml(r.label)}</strong></td>
+      <td class="text-mono text-sm text-primary">${escHtml(r.pattern)}</td>
+      <td><span class="badge badge-none">${escHtml(r.type)}</span></td>
+      <td><span class="badge ${r.hits ? 'badge-info' : 'badge-none'} text-mono">${(r.hits||0).toLocaleString()}</span></td>
+      <td class="text-xs text-dim text-mono">${escHtml((r.created_at || '').slice(0,16).replace('T',' '))}</td>
+      <td>
+        <div class="flex gap-1">
+          <a class="btn btn-ghost btn-xs" href="/search?q=${encodeURIComponent(r.pattern)}">
+            ${icon('i-search')} Search
+          </a>
+          <button class="btn btn-danger btn-xs" onclick="removeEntry(${r.id})">
+            ${icon('i-x')} Delete
+          </button>
+        </div>
+      </td>
+    </tr>`).join('');
+}
+
+async function removeEntry(id) {
+  const r = await fetch('/api/watchlist/' + id, { method: 'DELETE' });
+  if (r.ok) { toast('Pattern removed', 'success'); loadWatchlist(); }
+  else toast('Could not remove the pattern', 'error');
+}
+
+document.getElementById('wlForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const pattern = document.getElementById('wlPattern').value.trim();
+  if (!pattern) { toast('Enter a query pattern', 'error'); return; }
+  const body = {
+    pattern,
+    label: document.getElementById('wlLabel').value.trim() || pattern,
+    type: document.getElementById('wlType').value,
+  };
+  const r = await fetch('/api/watchlist', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(r => r.json()).catch(() => null);
+
+  if (!r?.ok) { toast('Could not save the pattern', 'error'); return; }
+  toast(`Saved — ${r.hits} host${r.hits === 1 ? '' : 's'} match right now`, 'success');
+  document.getElementById('wlPattern').value = '';
+  document.getElementById('wlLabel').value = '';
+  loadWatchlist();
+});
+
+loadWatchlist();
+</script>
+{% endblock %}

@@ -1,0 +1,401 @@
+{% extends "base.html" %}
+{% block title %}Data Sync{% endblock %}
+
+{% block head %}
+<style>
+/* ── Source rings (page-scoped component) ─────────────────────────── */
+.sync-sources {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(236px, 1fr));
+  gap: .7rem;
+  margin-bottom: 1.15rem;
+}
+
+.sync-source {
+  --ring-c: var(--primary);
+  --tx: 0deg; --ty: 0deg; --lift: 0px;
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: .85rem;
+  padding: .9rem .95rem;
+  background:
+    linear-gradient(168deg, rgba(139,170,214,.05), rgba(139,170,214,0) 58%),
+    var(--glass-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  isolation: isolate;
+  transform: perspective(1200px) rotateX(var(--tx)) rotateY(var(--ty)) translate3d(0, var(--lift), 0);
+  transition: transform var(--t-slow) var(--ease-out),
+              box-shadow var(--t-mid) var(--ease),
+              border-color var(--t-mid) var(--ease);
+}
+.sync-source::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  opacity: 0;
+  pointer-events: none;
+  background: radial-gradient(280px circle at var(--mx, 50%) var(--my, 0%), rgba(88,166,255,.1), transparent 62%);
+  transition: opacity var(--t-mid) var(--ease);
+}
+.sync-source:hover { --lift: -3px; box-shadow: var(--shadow-lg); border-color: rgba(139,170,214,.2); }
+.sync-source:hover::before { opacity: 1; }
+.sync-source.tilting { transition: box-shadow var(--t-mid) var(--ease), border-color var(--t-mid) var(--ease); }
+
+.sync-ring { position: relative; width: 62px; height: 62px; flex: none; }
+.sync-ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+.sync-ring circle { fill: none; stroke-width: 4; stroke-linecap: round; }
+.sr-track { stroke: rgba(139,170,214,.12); }
+.sr-fill {
+  stroke: var(--ring-c);
+  stroke-dasharray: 163.36;             /* 2πr, r = 26 */
+  stroke-dashoffset: 163.36;
+  transition: stroke-dashoffset 1.25s var(--ease-out);
+  filter: drop-shadow(0 0 5px var(--ring-c));
+}
+.sync-ring.full .sr-fill { stroke-dashoffset: 0; }
+.sync-ring.busy svg { animation: spin 1.25s linear infinite; }
+.sync-ring.busy .sr-fill { stroke-dasharray: 46 118; stroke-dashoffset: 0; }
+
+.sr-icon {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--ring-c);
+}
+.sr-icon .icon { width: 19px; height: 19px; }
+
+.sync-source-body { min-width: 0; flex: 1 1 auto; }
+.sync-source-name {
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+  font-size: .86rem;
+  font-weight: 600;
+  color: var(--fg);
+}
+.sync-source-full {
+  font-size: .69rem;
+  color: var(--fg-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sync-source-count {
+  margin-top: .3rem;
+  font-family: var(--font-mono);
+  font-size: 1.12rem;
+  font-weight: 600;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+.sync-source-foot {
+  display: flex;
+  align-items: center;
+  gap: .35rem;
+  margin-top: .22rem;
+  font-size: .685rem;
+  color: var(--fg-3);
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="page-title">
+    <span class="pt-icon"><svg class="icon"><use href="#i-radio"/></svg></span>
+    Data Sync
+  </div>
+  <div class="page-sub">Reference datasets — record counts, state and last update.</div>
+</div>
+
+<!-- ══════════════════ Per-source state ══════════════════ -->
+<div class="sync-sources" id="syncSources">
+  <div class="skeleton" style="height:102px;border-radius:var(--radius-lg)"></div>
+  <div class="skeleton" style="height:102px;border-radius:var(--radius-lg)"></div>
+  <div class="skeleton" style="height:102px;border-radius:var(--radius-lg)"></div>
+</div>
+
+<div class="grid-2">
+  <!-- ══════════════════ Configuration ══════════════════ -->
+  <div class="card" data-reveal>
+    <div class="card-title"><span class="ct-icon"><svg class="icon"><use href="#i-refresh"/></svg></span> Sync Configuration</div>
+
+    <p class="text-sm text-muted mb-3">
+      Pulls from public, freely available sources — no API key required.
+    </p>
+
+    <div class="source-list mb-3">
+      <div class="source-row">
+        <svg class="icon"><use href="#i-database"/></svg>
+        <span><strong>NVD</strong> — advisory records, indexed by affected component</span>
+        <code class="text-xs text-dim">nvd.nist.gov</code>
+      </div>
+      <div class="source-row">
+        <svg class="icon"><use href="#i-star"/></svg>
+        <span><strong>CISA KEV</strong> — priority catalogue entries</span>
+        <code class="text-xs text-dim">cisa.gov</code>
+      </div>
+      <div class="source-row">
+        <svg class="icon"><use href="#i-activity"/></svg>
+        <span><strong>EPSS</strong> — per-record probability scores</span>
+        <code class="text-xs text-dim">empiricalsecurity.com</code>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <label class="form-label">Advisory year range</label>
+      <div class="year-grid">
+        <label class="year-chip"><input type="checkbox" class="year-cb" value="2020"> 2020</label>
+        <label class="year-chip"><input type="checkbox" class="year-cb" value="2021"> 2021</label>
+        <label class="year-chip"><input type="checkbox" class="year-cb" value="2022"> 2022</label>
+        <label class="year-chip"><input type="checkbox" class="year-cb" value="2023" checked> 2023</label>
+        <label class="year-chip"><input type="checkbox" class="year-cb" value="2024" checked> 2024</label>
+        <label class="year-chip"><input type="checkbox" class="year-cb" value="2025" checked> 2025</label>
+        <label class="year-chip"><input type="checkbox" class="year-cb" value="2026" checked> 2026</label>
+      </div>
+    </div>
+
+    <label class="year-chip mb-4" style="display:inline-flex">
+      <input type="checkbox" id="forceSync"> Force refresh (ignore cache)
+    </label>
+    <div></div>
+
+    <button class="btn btn-primary" id="syncBtn" onclick="startSync()">
+      <svg class="icon"><use href="#i-radio"/></svg> Start Sync
+    </button>
+  </div>
+
+  <!-- ══════════════════ Activity ══════════════════ -->
+  <div class="card" data-reveal>
+    <div class="card-title flex justify-between items-center">
+      <span class="flex items-center gap-2">
+        <span class="ct-icon"><svg class="icon"><use href="#i-terminal"/></svg></span> Sync Activity
+      </span>
+      <span id="syncStateBadge" class="badge badge-none">idle</span>
+    </div>
+
+    <div class="scan-log" id="syncLogContent" style="height:236px" aria-live="polite"
+         aria-label="Sync activity log"></div>
+
+    <div class="mt-3">
+      <div class="flex items-center justify-between mb-1">
+        <span class="text-xs text-dim" id="syncProgLabel">No sync running</span>
+        <span class="text-xs text-dim text-mono" id="syncUpdated">—</span>
+      </div>
+      <div class="progress-wrap"><div class="progress-bar" id="syncProgBar" style="width:0%"></div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════ Summary ══════════════════ -->
+<div class="card mt-4" data-reveal>
+  <div class="card-title"><span class="ct-icon"><svg class="icon"><use href="#i-clipboard"/></svg></span> Dataset Summary</div>
+  <div id="cveStats">
+    <div class="text-dim text-sm flex items-center gap-2"><span class="spinner"></span> Loading…</div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let syncPollInterval = null;
+let syncTerm = null;
+let booted = false;
+
+function icon(name) { return `<svg class="icon"><use href="#${name}"/></svg>`; }
+function escHtml(s) {
+  return (s == null ? '' : String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function num(n) { return (n || 0).toLocaleString(); }
+
+function stamp(iso) {
+  if (!iso) return 'never';
+  const d = new Date(iso);
+  if (isNaN(d)) return String(iso).slice(0, 16).replace('T', ' ');
+  const mins = Math.round((Date.now() - d.getTime()) / 60000);
+  const rel = mins < 1 ? 'just now'
+            : mins < 60 ? `${mins}m ago`
+            : mins < 1440 ? `${Math.round(mins / 60)}h ago`
+            : `${Math.round(mins / 1440)}d ago`;
+  return `${d.toLocaleDateString()} ${d.toTimeString().slice(0, 5)} · ${rel}`;
+}
+
+/* ── Source definitions ───────────────────────────────────────────── */
+const SOURCES = [
+  { key: 'cve',  label: 'NVD',      full: 'Advisory records',     icon: 'i-database', color: 'var(--primary)' },
+  { key: 'kev',  label: 'CISA KEV', full: 'Priority catalogue',   icon: 'i-star',     color: 'var(--warning)' },
+  { key: 'epss', label: 'EPSS',     full: 'Probability scores',   icon: 'i-activity', color: 'var(--violet)'  },
+];
+
+function renderSources(stats, sync) {
+  document.getElementById('syncSources').innerHTML = SOURCES.map(s => {
+    const n = stats[s.key] || 0;
+    const state = sync.running ? 'busy' : n ? 'full' : 'empty';
+    const dot = sync.running ? 'loading' : n ? 'ready' : 'cold';
+    return `
+      <div class="sync-source" data-reveal data-tilt style="--ring-c:${s.color}">
+        <div class="sync-ring ${state}">
+          <svg viewBox="0 0 64 64" aria-hidden="true">
+            <circle class="sr-track" cx="32" cy="32" r="26"></circle>
+            <circle class="sr-fill"  cx="32" cy="32" r="26"></circle>
+          </svg>
+          <span class="sr-icon">${icon(s.icon)}</span>
+        </div>
+        <div class="sync-source-body">
+          <div class="sync-source-name">
+            <span class="status-dot ${dot}" aria-hidden="true"></span>
+            ${escHtml(s.label)}
+          </div>
+          <div class="sync-source-full">${escHtml(s.full)}</div>
+          <div class="sync-source-count" data-count="${n}">0</div>
+          <div class="sync-source-foot">
+            ${icon('i-clock')} ${sync.running
+              ? 'updating…'
+              : escHtml(stamp((sync.sources || {})[s.key] || sync.last))}
+          </div>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+/* ── Status ───────────────────────────────────────────────────────── */
+async function loadStatus() {
+  const [stats, sync] = await Promise.all([
+    fetch('/api/stats').then(r => r.json()).catch(() => ({})),
+    fetch('/api/feeds/status').then(r => r.json()).catch(() => ({})),
+  ]);
+
+  renderSources(stats, sync);
+
+  /* activity badge + progress strip */
+  const badge = document.getElementById('syncStateBadge');
+  if (sync.running) {
+    badge.className = 'badge badge-high';
+    badge.innerHTML = `<span class="spinner" style="width:10px;height:10px;border-width:1.5px"></span> running`;
+    document.getElementById('syncProgLabel').textContent = 'Fetching and parsing source data…';
+    nhProgress(document.getElementById('syncProgBar'), 100, 'active');
+  } else if (sync.error) {
+    badge.className = 'badge badge-kev';
+    badge.textContent = 'error';
+    document.getElementById('syncProgLabel').textContent = sync.error;
+    nhProgress(document.getElementById('syncProgBar'), 0, 'idle');
+  } else {
+    badge.className = sync.last ? 'badge badge-success' : 'badge badge-none';
+    badge.textContent = sync.last ? 'up to date' : 'idle';
+    document.getElementById('syncProgLabel').textContent =
+      sync.last ? 'Last sync finished' : 'No sync run yet';
+    nhProgress(document.getElementById('syncProgBar'), sync.last ? 100 : 0, sync.last ? 'done' : 'idle');
+  }
+  document.getElementById('syncUpdated').textContent = stamp(sync.last);
+
+  /* dataset summary */
+  document.getElementById('cveStats').innerHTML = !stats.cve
+    ? `<div class="empty-state"><div class="empty-icon">${icon('i-radio')}</div>
+         <h3>No reference data yet</h3><p>Run a sync to pull the datasets.</p></div>`
+    : `<div class="stats-grid" style="margin-bottom:0">
+        <div class="stat-tile primary" data-reveal>
+          <div class="stat-head">
+            <div><div class="stat-label">Advisory records</div>
+            <div class="stat-value" data-count="${stats.cve || 0}">0</div></div>
+            <span class="st-icon">${icon('i-database')}</span>
+          </div>
+          <div class="stat-sub">Component match rows indexed</div>
+        </div>
+        <div class="stat-tile warning" data-reveal>
+          <div class="stat-head">
+            <div><div class="stat-label">Catalogue entries</div>
+            <div class="stat-value" data-count="${stats.kev || 0}">0</div></div>
+            <span class="st-icon">${icon('i-star')}</span>
+          </div>
+          <div class="stat-sub">CISA KEV priority list</div>
+        </div>
+        <div class="stat-tile violet" data-reveal>
+          <div class="stat-head">
+            <div><div class="stat-label">Probability scores</div>
+            <div class="stat-value" data-count="${stats.epss || 0}">0</div></div>
+            <span class="st-icon">${icon('i-activity')}</span>
+          </div>
+          <div class="stat-sub">EPSS values per record</div>
+        </div>
+        <div class="stat-tile danger" data-reveal>
+          <div class="stat-head">
+            <div><div class="stat-label">Matches in your index</div>
+            <div class="stat-value" data-count="${stats.kev_hosts || 0}">0</div></div>
+            <span class="st-icon">${icon('i-target')}</span>
+          </div>
+          <div class="stat-sub">Hosts hitting the priority list</div>
+        </div>
+      </div>`;
+
+  /* boot the activity log once */
+  if (!booted) {
+    booted = true;
+    syncTerm = new NHTerminal('syncLogContent', { cps: 820 });
+    syncTerm.write('data sync console attached', 'log-hi');
+    syncTerm.write(`sources: NVD · CISA KEV · EPSS`, 'log-dim');
+    syncTerm.write(sync.last
+      ? `last update ${stamp(sync.last)}`
+      : 'no sync on record — pick a year range and start', 'log-info');
+  }
+}
+
+/* ── Sync ─────────────────────────────────────────────────────────── */
+async function startSync() {
+  const years = [...document.querySelectorAll('.year-cb:checked')].map(c => parseInt(c.value, 10));
+  const force = document.getElementById('forceSync').checked;
+  if (!years.length) { toast('Select at least one year', 'error'); return; }
+
+  const btn = document.getElementById('syncBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Syncing…';
+
+  syncTerm.write(`starting sync for ${years.join(', ')}${force ? ' (forced refresh)' : ''}`, 'log-hi');
+  syncTerm.write('pulling source archives and merging into the local index', 'log-dim');
+  nhProgress(document.getElementById('syncProgBar'), 100, 'active');
+
+  const r = await fetch('/api/feeds/sync', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ years, force })
+  }).then(r => r.json()).catch(() => null);
+
+  const reset = () => { btn.disabled = false; btn.innerHTML = `${icon('i-radio')} Start Sync`; };
+
+  if (!r?.ok) {
+    syncTerm.write('could not start sync', 'log-error');
+    toast('Sync failed to start', 'error');
+    reset();
+    return;
+  }
+
+  toast('Sync started — runs in the background', 'success');
+  loadStatus();
+
+  syncPollInterval = setInterval(async () => {
+    const st = await fetch('/api/feeds/status').then(r => r.json()).catch(() => ({}));
+    if (!st.running) {
+      clearInterval(syncPollInterval);
+      reset();
+      if (st.error) {
+        syncTerm.write(`error: ${st.error}`, 'log-error');
+        toast('Sync finished with errors', 'error');
+      } else {
+        syncTerm.write('✓ sync complete — datasets reloaded', 'log-done');
+        toast('Sync complete', 'success');
+      }
+      loadStatus();
+    } else {
+      syncTerm.write('working… parsing source data', 'log-dim', { instant: true });
+    }
+  }, 3000);
+}
+
+loadStatus();
+</script>
+{% endblock %}

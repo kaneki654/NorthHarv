@@ -1,0 +1,369 @@
+{% extends "base.html" %}
+{% block title %}Enumeration Engine{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="page-title">
+    <span class="pt-icon"><svg class="icon"><use href="#i-scope"/></svg></span>
+    Enumeration Engine
+  </div>
+  <div class="page-sub">Path &amp; service discovery configuration</div>
+</div>
+
+<div class="callout mb-4">
+  <svg class="icon"><use href="#i-info"/></svg>
+  <span>
+    These wordlists power NorthHarv's automatic path and service discovery during host analysis.
+    The engine uses them internally — load a list to enable that capability for the matching stage.
+  </span>
+</div>
+
+<!-- ══════════════════ Engine summary ══════════════════ -->
+<div class="engine-bar" id="engineBar" data-reveal>
+  <div class="engine-gauge">
+    <svg viewBox="0 0 54 54" aria-hidden="true">
+      <defs>
+        <linearGradient id="engGrad" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0"   stop-color="#39d0d8"/>
+          <stop offset=".55" stop-color="#58a6ff"/>
+          <stop offset="1"   stop-color="#a371f7"/>
+        </linearGradient>
+      </defs>
+      <circle class="gauge-track" cx="27" cy="27" r="22" fill="none" stroke-width="4"/>
+      <circle class="gauge-fill"  cx="27" cy="27" r="22" fill="none" stroke-width="4"
+              id="engGaugeFill" stroke-dasharray="138.23" stroke-dashoffset="138.23"/>
+    </svg>
+    <b id="engGaugePct">—</b>
+  </div>
+
+  <div class="engine-bar-text">
+    <div class="engine-bar-title">
+      <span class="status-dot cold" id="engDot" aria-hidden="true"></span>
+      <span id="engHeadline">Reading engine state…</span>
+    </div>
+    <div class="engine-bar-sub" id="engSubline">
+      Checking which discovery sets are resident.
+    </div>
+  </div>
+
+  <div class="engine-bar-stats">
+    <div class="eng-stat">
+      <span class="eng-stat-label">Entries resident</span>
+      <span class="eng-stat-value" id="engEntries">—</span>
+    </div>
+    <div class="eng-stat">
+      <span class="eng-stat-label">Footprint</span>
+      <span class="eng-stat-value" id="engSize">—</span>
+    </div>
+    <div class="eng-stat">
+      <span class="eng-stat-label">Stages armed</span>
+      <span class="eng-stat-value" id="engStages">—</span>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════ Capabilities ══════════════════ -->
+<div class="card mb-4" data-reveal>
+  <div class="card-title">
+    <span class="ct-icon"><svg class="icon"><use href="#i-layers"/></svg></span>
+    Discovery stages
+  </div>
+  <div class="cap-list" id="capList">
+    <div class="skeleton skeleton-text" style="height:34px"></div>
+    <div class="skeleton skeleton-text" style="height:34px"></div>
+    <div class="skeleton skeleton-text" style="height:34px"></div>
+    <div class="skeleton skeleton-text" style="height:34px"></div>
+  </div>
+</div>
+
+<!-- ══════════════════ Wordlist status ══════════════════ -->
+<div class="flex items-center justify-between mb-2 gap-2" style="flex-wrap:wrap">
+  <div class="card-title" style="margin:0">
+    <span class="ct-icon"><svg class="icon"><use href="#i-list"/></svg></span>
+    Wordlist status
+  </div>
+  <div class="flex gap-2">
+    <button class="btn btn-ghost btn-sm" id="loadAllBtn" onclick="loadAll()" disabled>
+      <svg class="icon"><use href="#i-bolt"/></svg> Load all remaining
+    </button>
+    <button class="btn btn-ghost btn-sm" onclick="refreshStatus(true)">
+      <svg class="icon"><use href="#i-refresh"/></svg> Re-read state
+    </button>
+  </div>
+</div>
+
+<div class="engine-grid" id="engineGrid">
+  <div class="skeleton" style="height:208px;border-radius:var(--radius-lg)"></div>
+  <div class="skeleton" style="height:208px;border-radius:var(--radius-lg)"></div>
+  <div class="skeleton" style="height:208px;border-radius:var(--radius-lg)"></div>
+  <div class="skeleton" style="height:208px;border-radius:var(--radius-lg)"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const GAUGE_C = 138.23;              /* 2πr, r = 22 */
+
+/* keys currently being loaded into the engine */
+const pending = new Set();
+let pollTimer = null;
+let pollTicks = 0;
+
+function icon(name) { return `<svg class="icon"><use href="#${name}"/></svg>`; }
+function escHtml(s) {
+  return (s == null ? '' : String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function fmtBytes(n) {
+  if (!n) return '—';
+  if (n >= 1e6) return (n / 1048576).toFixed(1) + ' MB';
+  if (n >= 1e3) return (n / 1024).toFixed(1) + ' KB';
+  return n + ' B';
+}
+function fmtNum(n) { return n ? n.toLocaleString() : '—'; }
+
+/* ── Engine vocabulary ────────────────────────────────────────────── */
+const CAT_ICON  = { web: 'i-globe', dns: 'i-radio', auth: 'i-key', misc: 'i-package' };
+const CAT_STAGE = {
+  web:  'Path discovery',
+  dns:  'Hostname expansion',
+  auth: 'Service validation',
+  misc: 'Request shaping',
+};
+
+/* what the engine actually does with each set */
+const PURPOSE = {
+  'web-common':
+    'Primary path sweep. Runs against every HTTP/HTTPS service the scanner finds, surfacing hidden directories and files.',
+  'web-big':
+    'Extended path sweep for hosts worth a deeper look — used when the primary sweep returns hits.',
+  'web-raft-dirs':
+    'Directory-structure expansion. Walks nested directory names on hosts that responded to the primary sweep.',
+  'web-api':
+    'REST endpoint probing on services whose banner or title looks like an API gateway.',
+  'subdomains-top5k':
+    'Hostname expansion around a discovered domain, feeding newly found names back into discovery.',
+  'subdomains-top20k':
+    'Wider hostname expansion — four times the coverage, for domains worth a deeper pass.',
+  'default-creds':
+    'Checks whether a discovered login service still answers to its vendor-default pair, so it can be reported.',
+  'user-agents':
+    'Supplies client identification strings for enumeration requests.',
+};
+
+function purposeFor(w) {
+  return PURPOSE[w.key] || w.desc || 'Used by the discovery engine during host analysis.';
+}
+
+/* ── Load a list into the engine ──────────────────────────────────── */
+async function loadIntoEngine(key, name) {
+  if (pending.has(key)) return;
+  pending.add(key);
+  render(lastData);                                  /* immediate "Loading" state */
+
+  const r = await fetch(`/api/wordlists/${encodeURIComponent(key)}/fetch`, { method: 'POST' });
+  if (!r.ok) {
+    pending.delete(key);
+    render(lastData);
+    toast(`Could not load ${name} into the engine`, 'error');
+    return;
+  }
+  toast(`Loading ${name} into the engine…`, 'info');
+  startPolling();
+}
+
+function loadAll() {
+  const cold = (lastData || []).filter(w => !w.cached && !pending.has(w.key));
+  if (!cold.length) return;
+  cold.forEach(w => loadIntoEngine(w.key, w.name));
+}
+
+/* poll until every pending list reports resident */
+function startPolling() {
+  if (pollTimer) return;
+  pollTicks = 0;
+  pollTimer = setInterval(async () => {
+    pollTicks++;
+    await refreshStatus(false);
+    if (!pending.size || pollTicks > 90) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+  }, 2000);
+}
+
+/* ── Rendering ────────────────────────────────────────────────────── */
+let lastData = [];
+
+function statePill(w) {
+  if (pending.has(w.key)) {
+    return `<span class="engine-state loading">
+      <span class="status-dot loading" aria-hidden="true"></span> Loading</span>`;
+  }
+  if (w.cached) {
+    return `<span class="engine-state ready">
+      <span class="status-dot ready" aria-hidden="true"></span> Ready</span>`;
+  }
+  return `<span class="engine-state">
+    <span class="status-dot cold" aria-hidden="true"></span> Not loaded</span>`;
+}
+
+function actions(w) {
+  if (pending.has(w.key)) {
+    return `<button class="btn btn-ghost btn-sm" disabled>
+      <span class="spinner"></span> Loading into engine…</button>`;
+  }
+  if (w.cached) {
+    return `
+      <button class="btn btn-ghost btn-sm" onclick="loadIntoEngine('${escHtml(w.key)}', '${escHtml(w.name)}')">
+        ${icon('i-refresh')} Refresh
+      </button>
+      <span class="text-xs text-dim flex items-center gap-1">
+        ${icon('i-check')} Armed for ${escHtml((CAT_STAGE[w.category] || 'discovery').toLowerCase())}
+      </span>`;
+  }
+  return `<button class="btn btn-primary btn-sm" onclick="loadIntoEngine('${escHtml(w.key)}', '${escHtml(w.name)}')">
+    ${icon('i-bolt')} Load into Engine
+  </button>`;
+}
+
+function card(w) {
+  const ready = !!w.cached;
+  return `
+    <div class="engine-card ${ready ? 'is-ready' : 'is-cold'}" data-reveal>
+      <div class="engine-card-head">
+        <span class="engine-card-icon">${icon(CAT_ICON[w.category] || 'i-file-text')}</span>
+        <div style="min-width:0">
+          <div class="engine-card-name">${escHtml(w.name)}</div>
+          <div class="engine-card-key">${escHtml(w.key)}</div>
+        </div>
+        ${statePill(w)}
+      </div>
+
+      <div class="engine-purpose">
+        ${icon('i-arrow-right')}
+        <span><b>Engine use</b>${escHtml(purposeFor(w))}</span>
+      </div>
+
+      <div class="engine-metrics">
+        <div class="engine-metric">
+          <div class="em-label">Entries</div>
+          <div class="em-value ${ready ? '' : 'dim'}">${fmtNum(w.line_count)}</div>
+        </div>
+        <div class="engine-metric">
+          <div class="em-label">Size</div>
+          <div class="em-value ${ready ? '' : 'dim'}">${fmtBytes(w.size_bytes)}</div>
+        </div>
+        <div class="engine-metric">
+          <div class="em-label">Stage</div>
+          <div class="em-value" style="font-size:.7rem">${escHtml(CAT_STAGE[w.category] || 'Discovery')}</div>
+        </div>
+      </div>
+
+      <div class="engine-actions">${actions(w)}</div>
+    </div>`;
+}
+
+function renderSummary(data) {
+  const total  = data.length;
+  const loaded = data.filter(w => w.cached).length;
+  const pct    = total ? loaded / total : 0;
+
+  const entries = data.reduce((a, w) => a + (w.cached ? (w.line_count || 0) : 0), 0);
+  const bytes   = data.reduce((a, w) => a + (w.cached ? (w.size_bytes || 0) : 0), 0);
+  const stages  = new Set(data.filter(w => w.cached).map(w => CAT_STAGE[w.category] || 'Discovery'));
+  const allStages = new Set(data.map(w => CAT_STAGE[w.category] || 'Discovery'));
+
+  document.getElementById('engGaugeFill').style.strokeDashoffset = String(GAUGE_C * (1 - pct));
+  document.getElementById('engGaugePct').textContent = Math.round(pct * 100) + '%';
+
+  const bar  = document.getElementById('engineBar');
+  const dot  = document.getElementById('engDot');
+  const ready = loaded > 0;
+
+  bar.classList.toggle('ready', ready);
+  bar.classList.toggle('cold', !ready);
+  dot.className = 'status-dot ' + (pending.size ? 'loading' : ready ? 'ready' : 'cold');
+
+  document.getElementById('engHeadline').innerHTML =
+    `<strong class="text-mono">${loaded} / ${total}</strong> wordlists loaded —
+     <span style="color:${ready ? 'var(--success)' : 'var(--fg-3)'}">
+       ${pending.size ? 'loading…' : ready ? 'engine ready' : 'engine idle'}
+     </span>`;
+
+  document.getElementById('engSubline').textContent = ready
+    ? `${stages.size} of ${allStages.size} discovery stages can run with what is resident now.`
+    : 'No sets resident — load one to arm path discovery.';
+
+  document.getElementById('engEntries').textContent = entries ? entries.toLocaleString() : '—';
+  document.getElementById('engSize').textContent    = fmtBytes(bytes);
+  document.getElementById('engStages').textContent  = `${stages.size} / ${allStages.size}`;
+
+  const btn = document.getElementById('loadAllBtn');
+  const cold = data.filter(w => !w.cached && !pending.has(w.key)).length;
+  btn.disabled = !cold;
+  btn.innerHTML = cold
+    ? `${icon('i-bolt')} Load all remaining (${cold})`
+    : `${icon('i-check')} All sets resident`;
+
+  /* capability rows reflect what is actually armed */
+  document.getElementById('capList').innerHTML = [...allStages].map(stage => {
+    const sets = data.filter(w => (CAT_STAGE[w.category] || 'Discovery') === stage);
+    const on   = sets.filter(w => w.cached).length;
+    return `
+      <div class="cap-row">
+        <span class="status-dot ${on ? 'ready' : 'cold'}" aria-hidden="true"></span>
+        <strong>${escHtml(stage)}</strong>
+        <span class="text-xs text-dim">${on ? 'enabled' : 'needs a wordlist'}</span>
+        <span class="cap-tail badge ${on ? 'badge-success' : 'badge-none'}">${on} / ${sets.length} sets</span>
+      </div>`;
+  }).join('');
+}
+
+function render(data) {
+  lastData = data || [];
+  const grid = document.getElementById('engineGrid');
+
+  if (!lastData.length) {
+    grid.innerHTML = `
+      <div class="empty-state" style="grid-column:1/-1">
+        <div class="empty-icon">${icon('i-list')}</div>
+        <h3>No discovery sets registered</h3>
+        <p>The engine catalogue is empty.</p>
+      </div>`;
+    return;
+  }
+
+  /* resident sets first, then by stage */
+  const order = { web: 0, dns: 1, auth: 2, misc: 3 };
+  const sorted = lastData.slice().sort((a, b) =>
+    (b.cached - a.cached) ||
+    ((order[a.category] ?? 9) - (order[b.category] ?? 9)) ||
+    a.name.localeCompare(b.name));
+
+  grid.innerHTML = sorted.map(card).join('');
+  renderSummary(lastData);
+}
+
+/* ── Load state ───────────────────────────────────────────────────── */
+async function refreshStatus(notify) {
+  const data = await fetch('/api/wordlists').then(r => r.json()).catch(() => null);
+  if (!data) {
+    if (notify) toast('Could not read engine state', 'error');
+    return;
+  }
+
+  /* clear pending keys that are now resident */
+  for (const w of data) {
+    if (w.cached && pending.has(w.key)) {
+      pending.delete(w.key);
+      toast(`${w.name} loaded — ${fmtNum(w.line_count)} entries armed`, 'success');
+    }
+  }
+
+  render(data);
+  if (notify) toast('Engine state re-read', 'success');
+}
+
+refreshStatus(false);
+</script>
+{% endblock %}

@@ -1,0 +1,554 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+
+{% block head %}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+{% endblock %}
+
+{% block content %}
+
+<!-- ══════════════════ Hero — glowing grid + scanline ══════════════════ -->
+<section class="hero" data-reveal>
+  <div class="hero-grid" aria-hidden="true"></div>
+  <div class="hero-scan" aria-hidden="true"></div>
+  <div class="hero-glow" aria-hidden="true"></div>
+
+  <div class="hero-inner">
+    <span class="hero-eyebrow">
+      <span class="live-dot" aria-hidden="true"></span> Live index
+    </span>
+
+    <h1 class="hero-title">Cyberspace <b>intelligence</b>, indexed.</h1>
+    <p class="hero-sub">
+      Query every observed host, open port, service banner and TLS certificate —
+      cross-referenced against NVD, CISA KEV and EPSS in one pass.
+    </p>
+
+    <form class="search-wrap mt-3" action="/search" method="get">
+      <input class="search-input" type="text" name="q" id="heroSearch"
+             placeholder="port:443   product:nginx   cve:CVE-2024   kev:true   country:US   org:Amazon"
+             autocomplete="off" spellcheck="false" aria-label="Search the host index">
+      <button type="submit" class="btn btn-primary">
+        <svg class="icon"><use href="#i-search"/></svg> Search
+      </button>
+    </form>
+
+    <div class="search-examples mt-2">
+      <span class="text-xs text-dim">Try</span>
+      <span class="search-chip" onclick="setSearch('kev:true')">kev:true</span>
+      <span class="search-chip" onclick="setSearch('cvss:9.0')">cvss:9.0</span>
+      <span class="search-chip" onclick="setSearch('product:nginx')">product:nginx</span>
+      <span class="search-chip" onclick="setSearch('service:ssh')">service:ssh</span>
+      <span class="search-chip" onclick="setSearch('http.title:admin')">http.title:admin</span>
+      <span class="search-chip" onclick="setSearch('ssl.cn:*.gov')">ssl.cn:*.gov</span>
+      <span class="search-chip" onclick="setSearch('port:3306 country:CN')">port:3306 country:CN</span>
+    </div>
+
+    <div class="hero-kpis" id="heroKpis">
+      <div class="hero-kpi">
+        <span class="hero-kpi-label">Hosts</span>
+        <span class="hero-kpi-value"><span class="spinner"></span></span>
+      </div>
+      <div class="hero-kpi">
+        <span class="hero-kpi-label">Open ports</span>
+        <span class="hero-kpi-value"><span class="spinner"></span></span>
+      </div>
+      <div class="hero-kpi">
+        <span class="hero-kpi-label">CVE records</span>
+        <span class="hero-kpi-value"><span class="spinner"></span></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════ Stat tiles ══════════════════ -->
+<div class="stats-grid" id="statGrid">
+  <div class="stat-tile primary skeleton" style="height:112px"></div>
+  <div class="stat-tile danger  skeleton" style="height:112px"></div>
+  <div class="stat-tile danger  skeleton" style="height:112px"></div>
+  <div class="stat-tile warning skeleton" style="height:112px"></div>
+  <div class="stat-tile         skeleton" style="height:112px"></div>
+  <div class="stat-tile         skeleton" style="height:112px"></div>
+</div>
+
+<!-- ══════════════════ Continuous scanning ══════════════════ -->
+<div class="card mb-4" data-reveal>
+  <div class="card-title flex justify-between items-center">
+    <span class="daemon-head">
+      <span class="ct-icon"><svg class="icon"><use href="#i-refresh"/></svg></span>
+      Continuous Scanning
+      <span class="dm-dot" id="dmDot" aria-hidden="true"></span>
+      <span class="text-sm text-muted" id="dmStatus">checking…</span>
+    </span>
+    <a href="/scan" class="btn btn-ghost btn-xs">
+      <svg class="icon"><use href="#i-bolt"/></svg> Scan manager
+    </a>
+  </div>
+  <div id="dmBody">
+    <div class="skeleton skeleton-text" style="height:30px"></div>
+    <div class="skeleton skeleton-text" style="height:30px"></div>
+  </div>
+</div>
+
+<!-- ══════════════════ Charts ══════════════════ -->
+<div class="grid-3 mb-4">
+  <div class="card" data-reveal>
+    <div class="card-title"><span class="ct-icon"><svg class="icon"><use href="#i-package"/></svg></span> Top Products</div>
+    <div class="chart-box"><canvas id="chartProducts"></canvas></div>
+  </div>
+  <div class="card" data-reveal>
+    <div class="card-title"><span class="ct-icon"><svg class="icon"><use href="#i-plug"/></svg></span> Top Ports</div>
+    <div class="chart-box"><canvas id="chartPorts"></canvas></div>
+  </div>
+  <div class="card" data-reveal>
+    <div class="card-title"><span class="ct-icon"><svg class="icon"><use href="#i-map-pin"/></svg></span> Top Countries</div>
+    <div class="chart-box"><canvas id="chartCountries"></canvas></div>
+  </div>
+</div>
+
+<div class="grid-2 mb-4">
+  <div class="card" data-reveal>
+    <div class="card-title"><span class="ct-icon"><svg class="icon"><use href="#i-chip"/></svg></span> Services Detected</div>
+    <div class="chart-box"><canvas id="chartServices"></canvas></div>
+  </div>
+  <div class="card" data-reveal>
+    <div class="card-title flex justify-between items-center">
+      <span class="flex items-center gap-2">
+        <span class="ct-icon"><svg class="icon"><use href="#i-clipboard"/></svg></span> Recent Scan Rounds
+      </span>
+      <a href="/scan" class="btn btn-ghost btn-xs">
+        <svg class="icon"><use href="#i-bolt"/></svg> Scan
+      </a>
+    </div>
+    <div id="recentRounds">
+      <div class="skeleton skeleton-text" style="height:30px"></div>
+      <div class="skeleton skeleton-text" style="height:30px"></div>
+      <div class="skeleton skeleton-text" style="height:30px"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════ High-risk hosts ══════════════════ -->
+<div class="card" data-reveal>
+  <div class="card-title flex justify-between items-center">
+    <span class="flex items-center gap-2">
+      <span class="ct-icon" style="color:var(--danger);background:rgba(248,81,73,.13)">
+        <svg class="icon"><use href="#i-flame"/></svg>
+      </span>
+      High-Risk Hosts — KEV / Critical CVSS
+    </span>
+    <a href="/search?q=kev:true" class="btn btn-ghost btn-xs">
+      View all <svg class="icon"><use href="#i-arrow-right"/></svg>
+    </a>
+  </div>
+  <div id="criticalHosts">
+    <div class="skeleton skeleton-text" style="height:44px"></div>
+    <div class="skeleton skeleton-text" style="height:44px"></div>
+    <div class="skeleton skeleton-text" style="height:44px"></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+/* ── Chart theming ────────────────────────────────────────────────── */
+const GRID   = 'rgba(139,170,214,.07)';
+const TICK   = '#8d99a8';
+const COLORS = ['#58a6ff','#39d0d8','#a371f7','#d2a8ff','#3fb950','#d29922','#fb8500','#f85149','#79c0ff','#8b7cf8'];
+
+if (window.Chart) {
+  Chart.defaults.font.family = "'Inter', system-ui, sans-serif";
+  Chart.defaults.font.size = 11;
+  Chart.defaults.color = TICK;
+  Chart.defaults.animation.duration = 1000;
+  Chart.defaults.animation.easing = 'easeOutQuart';
+  Chart.defaults.plugins.tooltip.backgroundColor = 'rgba(13,17,23,.96)';
+  Chart.defaults.plugins.tooltip.borderColor = 'rgba(88,166,255,.35)';
+  Chart.defaults.plugins.tooltip.borderWidth = 1;
+  Chart.defaults.plugins.tooltip.titleColor = '#e6edf3';
+  Chart.defaults.plugins.tooltip.bodyColor = '#8d99a8';
+  Chart.defaults.plugins.tooltip.padding = 10;
+  Chart.defaults.plugins.tooltip.cornerRadius = 8;
+  Chart.defaults.plugins.tooltip.displayColors = false;
+}
+
+const CHART_OPTS = {
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: { legend: { display: false } },
+  scales: {
+    x: { ticks: { color: TICK }, grid: { color: GRID }, border: { display: false } },
+    y: { ticks: { color: TICK }, grid: { display: false }, border: { display: false } }
+  }
+};
+const PIE_OPTS = {
+  responsive: true,
+  maintainAspectRatio: false,
+  cutout: '63%',
+  plugins: {
+    legend: {
+      position: 'right',
+      labels: { color: TICK, boxWidth: 9, boxHeight: 9, usePointStyle: true, pointStyle: 'circle', padding: 9 }
+    }
+  }
+};
+
+function barGradient(ctx, from, to) {
+  const g = ctx.createLinearGradient(0, 0, ctx.canvas.width || 320, 0);
+  g.addColorStop(0, from);
+  g.addColorStop(1, to);
+  return g;
+}
+
+function mkBar(id, labels, data, from = '#1f6feb', to = '#39d0d8') {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const ctx = el.getContext('2d');
+  new Chart(el, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        data,
+        backgroundColor: barGradient(ctx, from, to),
+        hoverBackgroundColor: to,
+        borderRadius: 5,
+        borderSkipped: false,
+        barThickness: 'flex',
+        maxBarThickness: 20,
+      }]
+    },
+    options: { ...CHART_OPTS, indexAxis: 'y' }
+  });
+}
+
+function mkDoughnut(id, labels, data) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  new Chart(el, {
+    type: 'doughnut',
+    data: {
+      labels,
+      datasets: [{
+        data,
+        backgroundColor: COLORS,
+        borderColor: 'rgba(8,11,18,.9)',
+        borderWidth: 2,
+        hoverOffset: 9,
+        hoverBorderColor: 'rgba(255,255,255,.22)',
+      }]
+    },
+    options: PIE_OPTS
+  });
+}
+
+/* ── Helpers ──────────────────────────────────────────────────────── */
+function setSearch(q) {
+  const el = document.getElementById('heroSearch');
+  el.value = q;
+  el.focus();
+}
+
+function icon(name, cls) {
+  return `<svg class="icon ${cls || ''}"><use href="#${name}"/></svg>`;
+}
+
+function escHtml(s) {
+  return (s == null ? '' : String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function num(n) { return (n || 0).toLocaleString(); }
+
+function severityBadge(sev, kev, cvss) {
+  const k = kev ? `<span class="badge badge-kev">${icon('i-flame')} KEV</span>` : '';
+  const cls = { CRITICAL:'badge-critical', HIGH:'badge-high', MEDIUM:'badge-medium', LOW:'badge-low', NONE:'badge-none' }[sev] || 'badge-none';
+  const s = sev !== 'NONE'
+    ? `<span class="badge ${cls}">${sev}${cvss > 0 ? ' ' + cvss.toFixed(1) : ''}</span>` : '';
+  return k + s;
+}
+
+/* real sparkline from the scan-round history (newest last) */
+function sparkline(series) {
+  if (!series || series.length < 2) return '';
+  const max = Math.max(...series, 1);
+  return `<div class="st-spark" title="Services found per recent round">` +
+    series.map((v, i) =>
+      `<i style="--h:${Math.max(8, Math.round(v / max * 100))}%;--n:${i}"></i>`).join('') +
+    `</div>`;
+}
+
+/* ── Dashboard load ───────────────────────────────────────────────── */
+async function loadDashboard() {
+  const r = await fetch('/api/stats').then(r => r.json()).catch(() => null);
+  if (!r) {
+    document.getElementById('statGrid').innerHTML =
+      `<div class="empty-state" style="grid-column:1/-1"><div class="empty-icon">${icon('i-alert')}</div>
+         <h3>Could not load statistics</h3><p>The API did not respond.</p></div>`;
+    return;
+  }
+
+  /* hero KPI strip */
+  document.getElementById('heroKpis').innerHTML = `
+    <div class="hero-kpi">
+      <span class="hero-kpi-label">Hosts indexed</span>
+      <span class="hero-kpi-value">${num(r.unique_ips)}</span>
+    </div>
+    <div class="hero-kpi">
+      <span class="hero-kpi-label">Open ports</span>
+      <span class="hero-kpi-value">${num(r.hosts)}</span>
+    </div>
+    <div class="hero-kpi">
+      <span class="hero-kpi-label">CVE records</span>
+      <span class="hero-kpi-value">${num(r.cve)}</span>
+    </div>
+    <div class="hero-kpi">
+      <span class="hero-kpi-label">KEV exposure</span>
+      <span class="hero-kpi-value ${r.kev_hosts ? 'hot' : ''}">${num(r.kev_hosts)}</span>
+    </div>
+    <div class="hero-kpi">
+      <span class="hero-kpi-label">Refreshed</span>
+      <span class="hero-kpi-value">${new Date().toLocaleTimeString()}</span>
+    </div>`;
+
+  /* stat tiles — values count up from 0 */
+  const rounds = r.recent_rounds || [];
+  const roundSeries = rounds.slice().reverse().map(x => x.total_found || 0);
+
+  document.getElementById('statGrid').innerHTML = `
+    <div class="stat-tile primary" data-reveal>
+      <div class="stat-head">
+        <div>
+          <div class="stat-label">Unique Hosts</div>
+          <div class="stat-value" data-count="${r.unique_ips || 0}">0</div>
+        </div>
+        <span class="st-icon">${icon('i-server')}</span>
+      </div>
+      <div class="stat-sub">${num(r.hosts)} open ports observed</div>
+    </div>
+
+    <div class="stat-tile danger" data-reveal>
+      <div class="stat-head">
+        <div>
+          <div class="stat-label">KEV Exploited</div>
+          <div class="stat-value" data-count="${r.kev_hosts || 0}">0</div>
+        </div>
+        <span class="st-icon">${icon('i-flame')}</span>
+      </div>
+      <div class="stat-sub">Hosts matching actively exploited CVEs</div>
+    </div>
+
+    <div class="stat-tile danger" data-reveal>
+      <div class="stat-head">
+        <div>
+          <div class="stat-label">Critical CVSS ≥ 9</div>
+          <div class="stat-value" data-count="${r.critical_hosts || 0}">0</div>
+        </div>
+        <span class="st-icon">${icon('i-alert')}</span>
+      </div>
+      <div class="stat-sub">${num(r.cve)} CVEs in local database</div>
+    </div>
+
+    <div class="stat-tile warning" data-reveal>
+      <div class="stat-head">
+        <div>
+          <div class="stat-label">KEV Catalogue</div>
+          <div class="stat-value" data-count="${r.kev || 0}">0</div>
+        </div>
+        <span class="st-icon">${icon('i-shield')}</span>
+      </div>
+      <div class="stat-sub">CISA Known Exploited entries</div>
+    </div>
+
+    <div class="stat-tile violet" data-reveal>
+      <div class="stat-head">
+        <div>
+          <div class="stat-label">EPSS Scored</div>
+          <div class="stat-value" data-count="${r.epss || 0}">0</div>
+        </div>
+        <span class="st-icon">${icon('i-activity')}</span>
+      </div>
+      <div class="stat-sub">Exploitation probability scores</div>
+    </div>
+
+    <div class="stat-tile success" data-reveal>
+      <div class="stat-head">
+        <div>
+          <div class="stat-label">Scan Rounds</div>
+          <div class="stat-value" data-count="${r.scan_rounds || 0}">0</div>
+        </div>
+        <span class="st-icon">${icon('i-bolt')}</span>
+      </div>
+      <div class="stat-sub">${num(r.observations)} observations recorded</div>
+      ${sparkline(roundSeries)}
+    </div>`;
+
+  /* charts — graceful empty states */
+  function emptyChart(id, label) {
+    const el = document.getElementById(id);
+    if (!el || !el.parentElement) return;
+    el.parentElement.innerHTML =
+      `<div class="empty-state" style="padding:2.1rem 1rem">
+         <div class="empty-icon">${icon('i-activity')}</div>
+         <h3>No ${label} yet</h3><p>Run a scan to collect data.</p>
+       </div>`;
+  }
+
+  r.top_products?.length
+    ? mkBar('chartProducts', r.top_products.map(x => x.product), r.top_products.map(x => x.count), '#1f6feb', '#39d0d8')
+    : emptyChart('chartProducts', 'products');
+  r.top_ports?.length
+    ? mkBar('chartPorts', r.top_ports.map(x => x.port), r.top_ports.map(x => x.count), '#6e40c9', '#d2a8ff')
+    : emptyChart('chartPorts', 'ports');
+  r.top_countries?.length
+    ? mkDoughnut('chartCountries', r.top_countries.map(x => x.country), r.top_countries.map(x => x.count))
+    : emptyChart('chartCountries', 'geo data');
+  r.service_dist?.length
+    ? mkDoughnut('chartServices', r.service_dist.map(x => x.service), r.service_dist.map(x => x.count))
+    : emptyChart('chartServices', 'services');
+
+  /* recent rounds */
+  document.getElementById('recentRounds').innerHTML = rounds.length
+    ? `<div class="cve-list">${rounds.map(rnd => `
+        <div class="cve-row" data-reveal>
+          <span class="cve-id">#${rnd.round_id}</span>
+          <span class="cve-desc text-mono">${escHtml(rnd.target || '—')}</span>
+          <span class="badge badge-none">${num(rnd.total_found)} found</span>
+          <span class="epss-score">${escHtml((rnd.started_at || '').slice(0, 16).replace('T', ' '))}</span>
+        </div>`).join('')}</div>`
+    : `<div class="empty-state">
+         <div class="empty-icon">${icon('i-bolt')}</div>
+         <h3>No scans yet</h3><p><a href="/scan">Start one</a> to populate the dashboard.</p>
+       </div>`;
+
+  /* high-risk hosts */
+  const kevData = await fetch('/api/search?q=kev:true&limit=8').then(r => r.json()).catch(() => ({ results: [] }));
+  const rows = kevData.results || [];
+  document.getElementById('criticalHosts').innerHTML = rows.length
+    ? `<div class="result-list">${rows.map(h => {
+        const kev = h.kev_list?.length;
+        const sevCls = kev ? 'is-kev' : 'sev-' + (h.severity || 'none').toLowerCase();
+        return `
+        <a href="/host/${encodeURIComponent(h.ip)}" class="result-row ${sevCls}" data-reveal>
+          <span class="result-ip">${escHtml(h.ip)}</span>
+          <span class="result-port">${h.port}/${escHtml(h.protocol || 'tcp')}</span>
+          <span class="result-service">
+            <div>${escHtml(h.service_name || 'unknown')}</div>
+            <div class="text-xs text-dim text-ellipsis">${escHtml([h.product, h.version].filter(Boolean).join(' '))}</div>
+          </span>
+          <span class="result-meta">
+            <div class="title">${escHtml(h.http_title || h.product || '')}</div>
+            <div class="sub text-xs text-dim">${kev ? escHtml(h.kev_list.slice(0, 2).join(', ')) : ''}</div>
+          </span>
+          <span class="result-badges">${severityBadge(h.severity, kev, h.cvss_max)}</span>
+        </a>`; }).join('')}</div>`
+    : `<div class="empty-state">
+         <div class="empty-icon">${icon('i-shield-check')}</div>
+         <h3>No KEV hits found</h3>
+         <p>Run <a href="/feeds">feed sync</a>, then <a href="/scan">scan a range</a>.</p>
+       </div>`;
+}
+
+/* ── Continuous scanning panel ────────────────────────────────────
+   Reads the daemon's own state row. The daemon writes a heartbeat, so
+   a process that died is reported as stopped rather than as idle. */
+const DM_LOOK = {
+  scanning:      ['busy', 'sweeping now'],
+  sleeping:      ['on',   'idle — waiting for the next sweep'],
+  starting:      ['busy', 'starting'],
+  waiting:       ['warn', 'waiting — no authorised ranges'],
+  stale:         ['off',  'stopped unexpectedly'],
+  stopped:       ['',     'not running'],
+  never_started: ['',     'never started'],
+  unknown:       ['',     'state unavailable'],
+};
+
+function dur(s) {
+  if (s == null) return '—';
+  s = Math.max(0, Math.round(s));
+  const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600);
+  const m = Math.floor(s % 3600 / 60), sec = s % 60;
+  if (d) return `${d}d ${h}h`;
+  if (h) return `${h}h ${String(m).padStart(2, '0')}m`;
+  if (m) return `${m}m ${String(sec).padStart(2, '0')}s`;
+  return `${sec}s`;
+}
+
+function stamp(iso) {
+  if (!iso) return '—';
+  const t = new Date(iso);
+  return isNaN(t) ? '—' : t.toLocaleString([], {
+    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+let dmTimer = null;
+let dmLeft = null;
+
+function dmFact(label, value, cls) {
+  return `<div class="daemon-fact"><span>${label}</span>
+            <span class="${cls || ''}">${value}</span></div>`;
+}
+
+async function loadDaemon() {
+  const d = await fetch('/api/daemon/status').then(r => r.json()).catch(() => null);
+  const dot = document.getElementById('dmDot');
+  const label = document.getElementById('dmStatus');
+  const body = document.getElementById('dmBody');
+  if (!d) {
+    dot.className = 'dm-dot';
+    label.textContent = 'state unavailable';
+    body.innerHTML = '<p class="daemon-hint">The daemon status API did not respond.</p>';
+    return;
+  }
+
+  const [cls, text] = DM_LOOK[d.status] || DM_LOOK.unknown;
+  dot.className = 'dm-dot ' + cls;
+  label.textContent = d.status === 'scanning' && d.current_target
+    ? `sweeping ${d.current_target}` : text;
+
+  const hours = d.interval_seconds ? (d.interval_seconds / 3600) : null;
+  const ranges = (d.targets || '').split(',').filter(Boolean);
+  const portCount = (d.ports || '').split(',').filter(Boolean).length;
+
+  body.innerHTML = `
+    <div class="daemon-grid">
+      ${dmFact('Next sweep', d.running && d.next_scan_in != null
+          ? `<span id="dmCount">${dur(d.next_scan_in)}</span>`
+          : (d.running ? 'in progress' : '—'),
+        'daemon-countdown')}
+      ${dmFact('Scheduled for', d.running ? stamp(d.next_scan_at) : '—')}
+      ${dmFact('Interval', hours ? (hours >= 1 ? `${+hours.toFixed(2)} h` : dur(d.interval_seconds)) : '—')}
+      ${dmFact('Last sweep', stamp(d.last_cycle_at))}
+      ${dmFact('Sweeps done', num(d.cycles))}
+      ${dmFact('Found last sweep', num(d.last_found))}
+      ${dmFact('Authorised ranges', d.allowlist != null ? num(d.allowlist) : '—')}
+      ${dmFact('Ports per host', portCount ? num(portCount) : '—')}
+    </div>
+    ${d.running && ranges.length ? `<div class="daemon-hint">Sweeping
+        <span class="text-mono">${escHtml(ranges.slice(0, 6).join(', '))}</span>
+        ${ranges.length > 6 ? ` and ${ranges.length - 6} more` : ''}.</div>` : ''}
+    ${d.last_error ? `<div class="daemon-err">${escHtml(d.last_error)}</div>` : ''}
+    ${!d.running ? `<div class="daemon-hint">
+        Continuous scanning is off. Every sweep opens its own scan round, so the
+        <a href="/timeline">timeline</a> and <a href="/changes">change feed</a>
+        can compare them.${d.allowlist === 0
+          ? ' No authorised ranges are configured yet.'
+          : ''}</div>` : ''}`;
+
+  /* live countdown, re-synced from the API every 30s */
+  if (dmTimer) { clearInterval(dmTimer); dmTimer = null; }
+  if (d.running && d.next_scan_in != null) {
+    dmLeft = d.next_scan_in;
+    dmTimer = setInterval(() => {
+      const el = document.getElementById('dmCount');
+      if (!el) { clearInterval(dmTimer); dmTimer = null; return; }
+      dmLeft = Math.max(0, dmLeft - 1);
+      el.textContent = dur(dmLeft);
+    }, 1000);
+  }
+}
+
+loadDashboard();
+loadDaemon();
+setInterval(loadDaemon, 30000);
+</script>
+{% endblock %}

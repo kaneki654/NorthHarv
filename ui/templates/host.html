@@ -1,0 +1,663 @@
+{% extends "base.html" %}
+{% block title %}Host {{ ip }}{% endblock %}
+
+{% block head %}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<div class="breadcrumb">
+  <a href="/">Home</a>
+  <svg class="icon"><use href="#i-chev-right"/></svg>
+  <a href="/search">Search</a>
+  <svg class="icon"><use href="#i-chev-right"/></svg>
+  <span>{{ ip }}</span>
+</div>
+
+<!-- ══════════════════ Hero: IP, risk gauge, tags ══════════════════ -->
+<section class="host-hero" id="hostHero" data-reveal>
+  <div class="host-hero-main">
+    <div class="host-ip">{{ ip }}</div>
+    <div class="host-meta-row" id="hostMeta">
+      <span class="skeleton" style="width:220px;height:20px;border-radius:5px;display:inline-block"></span>
+    </div>
+  </div>
+  <div class="risk-gauge" id="riskGauge" title="NorthHarv risk score">
+    <svg viewBox="0 0 150 92" aria-hidden="true">
+      <defs>
+        <linearGradient id="rgGrad" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0" stop-color="#3fb950"/>
+          <stop offset=".5" stop-color="#d29922"/>
+          <stop offset="1" stop-color="#f85149"/>
+        </linearGradient>
+      </defs>
+      <path class="rg-track" d="M12 84 A63 63 0 0 1 138 84" fill="none" stroke-width="11" stroke-linecap="round"/>
+      <path class="rg-fill" id="rgFill" d="M12 84 A63 63 0 0 1 138 84" fill="none"
+            stroke="url(#rgGrad)" stroke-width="11" stroke-linecap="round"
+            stroke-dasharray="198" stroke-dashoffset="198"/>
+    </svg>
+    <div class="rg-value">
+      <div class="rg-score" id="rgScore">—</div>
+      <div class="rg-band" id="rgBand" style="color:var(--fg-3)">risk score</div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════ Facts: two columns ══════════════════ -->
+<div class="host-cols">
+  <div class="card" data-reveal>
+    <div class="card-title">
+      <span class="ct-icon"><svg class="icon"><use href="#i-globe"/></svg></span> Identity
+    </div>
+    <div id="hostIdentity">
+      <div class="skeleton skeleton-text" style="height:22px"></div>
+      <div class="skeleton skeleton-text" style="height:22px"></div>
+      <div class="skeleton skeleton-text" style="height:22px"></div>
+    </div>
+  </div>
+
+  <div class="card" data-reveal>
+    <div class="card-title">
+      <span class="ct-icon"><svg class="icon"><use href="#i-map-pin"/></svg></span> Network &amp; location
+    </div>
+    <div id="hostNetwork">
+      <div class="skeleton skeleton-text" style="height:22px"></div>
+      <div class="skeleton skeleton-text" style="height:22px"></div>
+      <div class="skeleton skeleton-text" style="height:22px"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════ Tabs ══════════════════ -->
+<div class="tabs" id="hostTabs">
+  <button class="tab-btn active" data-tab="ports"     onclick="showTab('ports')"><svg class="icon"><use href="#i-plug"/></svg> Overview</button>
+  <button class="tab-btn"        data-tab="raw"       onclick="showTab('raw')"><svg class="icon"><use href="#i-file-text"/></svg> Raw Data</button>
+  <button class="tab-btn"        data-tab="history"   onclick="showTab('history')"><svg class="icon"><use href="#i-clock"/></svg> Timeline</button>
+  <button class="tab-btn"        data-tab="whois"     onclick="showTab('whois')"><svg class="icon"><use href="#i-server"/></svg> Whois</button>
+  <button class="tab-btn"        data-tab="notes"     onclick="showTab('notes')"><svg class="icon"><use href="#i-note"/></svg> Notes</button>
+  <button class="tab-btn"        data-tab="enumerate" onclick="showTab('enumerate')"><svg class="icon"><use href="#i-scope"/></svg> Enumerate</button>
+</div>
+
+<div class="tab-panel active" id="tab-ports">
+  <div id="portList"><div class="skeleton" style="height:220px"></div></div>
+</div>
+
+<div class="tab-panel" id="tab-raw">
+  <div class="card" data-reveal>
+    <div class="card-title flex justify-between items-center">
+      <span class="flex items-center gap-2">
+        <span class="ct-icon"><svg class="icon"><use href="#i-file-text"/></svg></span> Raw record
+      </span>
+      <button class="btn btn-ghost btn-xs" onclick="copyRaw()">
+        <svg class="icon"><use href="#i-clipboard"/></svg> Copy JSON
+      </button>
+    </div>
+    <div class="scan-log" id="rawJson" style="height:480px"></div>
+  </div>
+</div>
+
+<div class="tab-panel" id="tab-history">
+  <div class="card mb-3" data-reveal>
+    <div class="card-title">
+      <span class="ct-icon"><svg class="icon"><use href="#i-activity"/></svg></span>
+      Open ports per scan round
+    </div>
+    <div class="chart-box" style="height:250px"><canvas id="hostTimeline"></canvas></div>
+  </div>
+  <div class="card" data-reveal>
+    <div class="card-title">
+      <span class="ct-icon"><svg class="icon"><use href="#i-clock"/></svg></span>
+      Port history — select a port
+    </div>
+    <div class="flex gap-2 mb-3" style="flex-wrap:wrap" id="histPortPicker"></div>
+    <div id="histContent"><div class="text-dim text-sm">Select a port above.</div></div>
+  </div>
+</div>
+
+<div class="tab-panel" id="tab-whois">
+  <div class="card" data-reveal style="max-width:720px">
+    <div class="card-title">
+      <span class="ct-icon"><svg class="icon"><use href="#i-server"/></svg></span> Network registration
+    </div>
+    <div id="whoisBody"><div class="text-dim text-sm flex items-center gap-2"><span class="spinner"></span> Loading…</div></div>
+  </div>
+</div>
+
+<div class="tab-panel" id="tab-notes">
+  <div class="card" data-reveal style="max-width:620px">
+    <div class="card-title">
+      <span class="ct-icon"><svg class="icon"><use href="#i-note"/></svg></span> Notes &amp; tags
+    </div>
+    <div class="form-row">
+      <label class="form-label" for="noteTags">Tags (comma-separated)</label>
+      <input class="form-input" id="noteTags" placeholder="production, web-server, reviewed"
+             style="font-family:var(--font-sans)">
+    </div>
+    <div class="form-row">
+      <label class="form-label" for="noteText">Notes</label>
+      <textarea class="form-textarea" id="noteText" rows="6"
+                placeholder="Analysis notes, context…" style="font-family:var(--font-sans)"></textarea>
+    </div>
+    <label style="display:flex;align-items:center;gap:.5rem;font-size:.85rem;color:var(--fg-2);margin-bottom:1rem;cursor:pointer">
+      <input type="checkbox" id="noteStarred">
+      <svg class="icon" style="color:var(--warning)"><use href="#i-star"/></svg> Star this host
+    </label>
+    <button class="btn btn-primary" onclick="saveNotes()">
+      <svg class="icon"><use href="#i-check"/></svg> Save notes
+    </button>
+  </div>
+</div>
+
+<div class="tab-panel" id="tab-enumerate">
+  <div class="card mb-3" data-reveal style="max-width:620px">
+    <div class="card-title">
+      <span class="ct-icon"><svg class="icon"><use href="#i-scope"/></svg></span> Path discovery
+    </div>
+    <div class="callout">
+      <svg class="icon"><use href="#i-info"/></svg>
+      <span>Walks candidate paths against this host's web services using the
+        discovery engine's wordlists. Only use on hosts you own or have written
+        permission to test.</span>
+    </div>
+    <div class="form-row">
+      <label class="form-label" for="enumUrl">Target URL</label>
+      <input class="form-input" id="enumUrl" placeholder="http://host:port">
+    </div>
+    <div class="form-row">
+      <label class="form-label" for="enumWordlist">Wordlist</label>
+      <select class="form-select" id="enumWordlist" style="font-family:var(--font-sans)">
+        <option value="web-common">Web Common (~4,700 paths)</option>
+        <option value="web-big">Web Big (~20k paths)</option>
+        <option value="web-raft-dirs">RAFT Large Directories (~62k)</option>
+        <option value="web-api">API Endpoints</option>
+      </select>
+    </div>
+    <button class="btn btn-primary" onclick="startEnum()">
+      <svg class="icon"><use href="#i-bolt"/></svg> Start enumeration
+    </button>
+  </div>
+  <div id="enumResults"></div>
+</div>
+
+<!-- ══════════════════ Related hosts ══════════════════ -->
+<div id="relatedWrap" class="mt-4"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const HOST_IP = {{ ip | tojson }};
+let hostPorts = [];
+
+function icon(name, style) { return `<svg class="icon"${style ? ` style="${style}"` : ''}><use href="#${name}"/></svg>`; }
+function escHtml(s) {
+  return (s == null ? '' : String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function attr(s) { return escHtml(s).replace(/"/g, '&quot;'); }
+
+function flag(cc) {
+  if (!cc || cc.length !== 2) return '';
+  const base = 0x1F1E6;
+  return String.fromCodePoint(...[...cc.toUpperCase()].map(c => base + c.charCodeAt(0) - 65));
+}
+
+function severityClass(sev) {
+  return { CRITICAL:'badge-critical', HIGH:'badge-high', MEDIUM:'badge-medium',
+           LOW:'badge-low', NONE:'badge-none' }[sev] || 'badge-none';
+}
+
+function riskBand(score) {
+  if (score >= 800) return ['CRITICAL', 'var(--critical)'];
+  if (score >= 600) return ['HIGH', 'var(--high)'];
+  if (score >= 350) return ['MEDIUM', 'var(--medium)'];
+  if (score >= 150) return ['LOW', 'var(--low)'];
+  return ['MINIMAL', 'var(--success)'];
+}
+
+function parseJson(v) {
+  if (v && typeof v === 'object') return v;
+  if (!v) return {};
+  try { return JSON.parse(v) || {}; } catch (e) { return {}; }
+}
+
+/* ── Risk gauge ───────────────────────────────────────────────────── */
+function paintGauge(score) {
+  const ARC = 198;                       /* path length of the half circle */
+  const pct = Math.max(0, Math.min(1, score / 1000));
+  const [band, colour] = riskBand(score);
+  document.getElementById('rgFill').style.strokeDashoffset = String(ARC * (1 - pct));
+  const el = document.getElementById('rgScore');
+  el.dataset.count = score;
+  el.textContent = '0';
+  el.style.color = colour;
+  const b = document.getElementById('rgBand');
+  b.textContent = band;
+  b.style.color = colour;
+  if (window.nhCounters) window.nhCounters(document.getElementById('riskGauge'));
+}
+
+/* ── Certificate block ────────────────────────────────────────────── */
+function renderCert(tls) {
+  if (!tls || !tls.subject_cn) return '';
+  const exp = tls.days_to_expiry;
+  const expClass = exp < 0 ? 'cert-expired' : exp < 30 ? 'text-warning' : 'cert-ok';
+  const expStr = exp == null ? '?' : exp < 0 ? `EXPIRED ${Math.abs(exp)}d ago` : `${exp}d remaining`;
+  return `
+    <div class="cert-box mb-3">
+      <div class="flex items-center gap-2 mb-2" style="font-size:.64rem;text-transform:uppercase;letter-spacing:.1em;color:var(--fg-3);font-weight:700">
+        ${icon('i-certificate', 'color:var(--primary)')} TLS certificate
+      </div>
+      ${[
+        ['Subject CN', escHtml(tls.subject_cn || '—')],
+        ['Issuer CN',  escHtml(tls.issuer_cn || '—')],
+        ['SANs',       escHtml((tls.san || []).slice(0, 10).join(', ')) || '—'],
+        ['Version',    escHtml(tls.version || '—') + (tls.alpn ? ` · ALPN ${escHtml(tls.alpn)}` : '')],
+        ['Not after',  `<span class="${expClass}">${escHtml(tls.not_after || '?')} (${expStr})</span>`],
+        ['SHA-256',    `<span class="text-mono text-xs">${escHtml((tls.sha256 || '').slice(0, 32))}…</span>`],
+        ['Key',        tls.key_type ? `${escHtml(tls.key_type)} ${tls.key_bits} bit` : '—'],
+        ['Self-signed', tls.self_signed ? `<span class="badge badge-kev">${icon('i-alert')} Yes</span>` : 'No'],
+      ].map(([k, v]) => `<div class="cert-row"><span class="cert-key">${k}</span><span class="cert-val">${v}</span></div>`).join('')}
+    </div>`;
+}
+
+/* ── One port card ────────────────────────────────────────────────── */
+function portCard(p, idx) {
+  const tls = parseJson(p.tls_json);
+  const kev = p.kev_list?.length;
+  const sev = severityClass(p.severity);
+  const techs = parseJson(p.techs);
+  const techList = Array.isArray(techs) ? techs : [];
+  const cves = p.cves_list || [];
+
+  const cveRows = cves.length ? `
+    <div class="table-scroll mb-3">
+      <table class="port-table">
+        <thead><tr><th>CVE</th><th>CVSS</th><th>EPSS</th><th>KEV</th></tr></thead>
+        <tbody>${cves.slice(0, 25).map(c => `
+          <tr>
+            <td><a href="/cve/${encodeURIComponent(c)}" class="cve-id">${escHtml(c)}</a></td>
+            <td>${p.cvss_max > 0 ? `<span class="badge ${sev}">${p.cvss_max.toFixed(1)}</span>` : '—'}</td>
+            <td class="text-mono text-xs">${p.epss_max > 0 ? (p.epss_max * 100).toFixed(1) + '%' : '—'}</td>
+            <td>${(p.kev_list || []).includes(c)
+                  ? `<span class="badge badge-kev">${icon('i-flame')} KEV</span>` : '—'}</td>
+          </tr>`).join('')}</tbody>
+      </table>
+    </div>` : '';
+
+  return `
+    <div class="card port-card ${idx === 0 ? 'open' : ''}" id="port-${p.port}" data-reveal>
+      <div class="port-card-head" onclick="this.parentElement.classList.toggle('open')">
+        <span class="port-num" style="font-size:1rem">${p.port}</span>
+        <span class="text-xs text-dim">${escHtml(p.protocol || 'tcp')}</span>
+        <span class="badge badge-info">${escHtml(p.service_name || 'unknown')}</span>
+        ${p.product ? `<span class="text-sm">${escHtml(p.product)} <span class="text-dim">${escHtml(p.version || '')}</span></span>` : ''}
+        ${p.http_status ? `<span class="badge badge-none status-${String(p.http_status)[0]}xx">HTTP ${p.http_status}</span>` : ''}
+        ${kev ? `<span class="badge badge-kev">${icon('i-flame')} ${kev} KEV</span>` : ''}
+        ${p.cvss_max > 0 ? `<span class="badge ${sev}">${p.severity} ${p.cvss_max.toFixed(1)}</span>` : ''}
+        ${p.waf ? `<span class="badge badge-success">${icon('i-shield')} ${escHtml(p.waf)}</span>` : ''}
+        <span class="badge badge-none text-mono">risk ${p.risk_score || 0}</span>
+        <span class="chev">${icon('i-chev-right')}</span>
+      </div>
+
+      <div class="port-card-body">
+        ${techList.length ? `
+          <div class="flex gap-1 mb-3" style="flex-wrap:wrap">
+            ${techList.map(t => `<a class="tech-chip" href="/search?q=${encodeURIComponent('tech:' + t)}">${icon('i-package')} ${escHtml(t)}</a>`).join('')}
+          </div>` : ''}
+
+        ${p.http_title ? `<div class="fact-row"><span class="fact-key">Title</span><span class="fact-val">${escHtml(p.http_title)}</span></div>` : ''}
+        ${p.http_server ? `<div class="fact-row"><span class="fact-key">Server</span><span class="fact-val text-mono">${escHtml(p.http_server)}</span></div>` : ''}
+        ${p.icon_hash ? `<div class="fact-row"><span class="fact-key">Favicon</span><span class="fact-val">
+            <a class="text-mono" href="/search?q=${encodeURIComponent('icon_hash:' + p.icon_hash)}">${p.icon_hash}</a></span></div>` : ''}
+        ${p.hassh ? `<div class="fact-row"><span class="fact-key">HASSH</span><span class="fact-val text-mono text-xs">
+            <a href="/search?q=${encodeURIComponent('hassh:' + p.hassh)}">${escHtml(p.hassh)}</a></span></div>` : ''}
+
+        <div class="fact-row">
+          <span class="fact-key">JARM</span>
+          <span class="fact-val flex items-center gap-2" style="flex-wrap:wrap">
+            <span class="text-mono text-xs" id="jarm-${p.port}">${p.jarm ? escHtml(p.jarm) : '<span class="text-dim">not fingerprinted</span>'}</span>
+            <button class="btn btn-ghost btn-xs" onclick="runJarm(${p.port})">
+              ${icon('i-target')} Run JARM
+            </button>
+            <span id="jarmVerdict-${p.port}"></span>
+          </span>
+        </div>
+
+        <div class="mt-3 mb-1 text-xs text-dim">Banner · click to expand</div>
+        <div class="banner-cell">${escHtml((p.banner || '').slice(0, 4000)) || '(no banner captured)'}</div>
+
+        ${p.http_headers ? `
+          <div class="mt-3 mb-1 text-xs text-dim">Response headers</div>
+          <div class="banner-cell">${escHtml(p.http_headers)}</div>` : ''}
+
+        ${renderCert(tls) ? `<div class="mt-3">${renderCert(tls)}</div>` : ''}
+        ${cveRows ? `<div class="mt-3"><div class="mb-1 text-xs text-dim">Vulnerabilities</div>${cveRows}</div>` : ''}
+
+        <div class="flex gap-2 mt-2" style="flex-wrap:wrap">
+          <a class="btn btn-ghost btn-xs" href="/api/risk?ip=${encodeURIComponent(HOST_IP)}&port=${p.port}" target="_blank" rel="noopener">
+            ${icon('i-activity')} Risk breakdown
+          </a>
+          <button class="btn btn-ghost btn-xs" onclick="rerunTechs(${p.port})">
+            ${icon('i-refresh')} Re-detect technologies
+          </button>
+        </div>
+      </div>
+    </div>`;
+}
+
+/* ── Load ─────────────────────────────────────────────────────────── */
+async function loadHost() {
+  const data = await fetch(`/api/host/${encodeURIComponent(HOST_IP)}`).then(r => r.json()).catch(() => null);
+
+  if (!data || !data.length || data.detail) {
+    document.getElementById('hostHero').innerHTML =
+      `<div class="host-hero-main"><div class="host-ip">${escHtml(HOST_IP)}</div>
+         <div class="text-dim mt-2">Host not found in database.</div></div>`;
+    document.getElementById('portList').innerHTML =
+      `<div class="empty-state"><div class="empty-icon">${icon('i-server')}</div>
+         <h3>No record for this host</h3>
+         <p>Nothing has been observed at ${escHtml(HOST_IP)} yet —
+            <a href="/scan">run a scan</a> to collect it.</p></div>`;
+    for (const id of ['hostIdentity', 'hostNetwork', 'whoisBody', 'histContent']) {
+      const el = document.getElementById(id);
+      if (el) el.innerHTML = '<div class="text-dim text-sm">No data for this host.</div>';
+    }
+    document.getElementById('rawJson').textContent = '{}';
+    return;
+  }
+
+  hostPorts = data;
+  const first = data[0];
+  const geo = parseJson(first.geo_json);
+  const maxRisk = Math.max(...data.map(p => p.risk_score || 0));
+
+  paintGauge(maxRisk);
+
+  /* hero meta */
+  const allTags = [...new Set(data.flatMap(p => String(p.tags || '').split(',')).map(t => t.trim()).filter(Boolean))];
+  document.getElementById('hostMeta').innerHTML = `
+    <span class="badge badge-none text-mono">${data.length} open port${data.length !== 1 ? 's' : ''}</span>
+    <span class="geo-pill">${icon('i-clock')} last seen ${escHtml(String(first.last_seen || '').slice(0, 10))}</span>
+    ${first.starred ? `<span class="badge badge-info">${icon('i-star')} starred</span>` : ''}
+    ${data.some(p => p.kev_list?.length) ? `<span class="badge badge-kev">${icon('i-flame')} actively exploited</span>` : ''}
+    ${allTags.map(t => `<a class="badge badge-success" href="/search?q=${encodeURIComponent('tag:' + t)}">${escHtml(t)}</a>`).join('')}`;
+
+  /* identity column */
+  const names = [...new Set(data.map(p => p.hostname).filter(Boolean))];
+  /* The registrable domain is resolved server-side against the public
+     suffix list and stored on the row. Taking the last two labels here
+     instead would call example.co.uk "co.uk", and would turn a
+     single-label name such as a NetBIOS host into a domain of its own. */
+  const domains = [...new Set(data.map(p => p.domain).filter(Boolean))];
+  const techs = [...new Set(data.flatMap(p => {
+    const t = parseJson(p.techs);
+    return Array.isArray(t) ? t : [];
+  }))];
+
+  document.getElementById('hostIdentity').innerHTML = `
+    <div class="fact-row"><span class="fact-key">Hostnames</span><span class="fact-val">
+      ${names.length ? names.map(n => `<div class="text-mono text-sm">${escHtml(n)}</div>`).join('') : '<span class="text-dim">none resolved</span>'}
+    </span></div>
+    <div class="fact-row"><span class="fact-key">Domains</span><span class="fact-val">
+      ${domains.length ? domains.map(d => `<a class="text-mono text-sm" href="/search?q=${encodeURIComponent('domain:' + d)}">${escHtml(d)}</a>`).join(', ') : '<span class="text-dim">—</span>'}
+    </span></div>
+    <div class="fact-row"><span class="fact-key">Technologies</span><span class="fact-val">
+      ${techs.length ? `<div class="flex gap-1" style="flex-wrap:wrap">${techs.map(t =>
+          `<a class="tech-chip" href="/search?q=${encodeURIComponent('tech:' + t)}">${escHtml(t)}</a>`).join('')}</div>`
+        : '<span class="text-dim">none fingerprinted</span>'}
+    </span></div>
+    <div class="fact-row"><span class="fact-key">Open ports</span><span class="fact-val">
+      <div class="flex gap-1" style="flex-wrap:wrap">${data.map(p =>
+        `<a class="port-jump" href="#port-${p.port}" onclick="openPort(${p.port})">${p.port}</a>`).join('')}</div>
+    </span></div>`;
+
+  /* network column */
+  document.getElementById('hostNetwork').innerHTML = `
+    <div class="fact-row"><span class="fact-key">Country</span><span class="fact-val">
+      <span class="flag">${flag(geo.country_code)}</span> ${escHtml(geo.country || '—')}
+      ${geo.country_code ? `<a class="text-xs text-dim" href="/search?q=${encodeURIComponent('country:' + geo.country_code)}"> (${escHtml(geo.country_code)})</a>` : ''}
+    </span></div>
+    <div class="fact-row"><span class="fact-key">City</span><span class="fact-val">${escHtml(geo.city || '—')}${geo.region ? ', ' + escHtml(geo.region) : ''}</span></div>
+    <div class="fact-row"><span class="fact-key">Organisation</span><span class="fact-val">
+      ${geo.org ? `<a href="/search?q=${encodeURIComponent('org:' + geo.org)}">${escHtml(geo.org)}</a>` : '—'}</span></div>
+    <div class="fact-row"><span class="fact-key">ISP</span><span class="fact-val">${escHtml(geo.org || '—')}</span></div>
+    <div class="fact-row"><span class="fact-key">ASN</span><span class="fact-val text-mono">
+      ${geo.asn ? `<a href="/search?q=${encodeURIComponent('asn:' + geo.asn)}">AS${escHtml(String(geo.asn))}</a>` : '—'}</span></div>
+    <div class="fact-row"><span class="fact-key">Cloud</span><span class="fact-val">
+      ${first.cloud_provider
+        ? `<a class="badge badge-info" href="/search?q=${encodeURIComponent('cloud:' + first.cloud_provider)}">${icon('i-layers')} ${escHtml(first.cloud_provider)}</a>`
+        : '<span class="text-dim">not a known cloud range</span>'}</span></div>
+    <div class="fact-row"><span class="fact-key">First seen</span><span class="fact-val text-mono text-xs">${escHtml(String(first.first_seen || '').slice(0, 19).replace('T', ' '))}</span></div>`;
+
+  /* ports */
+  document.getElementById('portList').innerHTML = data.map(portCard).join('');
+
+  /* raw data */
+  document.getElementById('rawJson').textContent = JSON.stringify(data, null, 2);
+
+  /* notes */
+  document.getElementById('noteTags').value = first.tags || '';
+  document.getElementById('noteText').value = first.notes || '';
+  document.getElementById('noteStarred').checked = !!first.starred;
+
+  /* history picker + chart */
+  document.getElementById('histPortPicker').innerHTML = data.map(p =>
+    `<button class="btn btn-ghost btn-sm text-mono" onclick="loadHistory(${p.port})">${p.port}</button>`).join('');
+  drawHostTimeline(data);
+
+  /* enumerate prefill */
+  const httpsPort = data.find(p => [443, 8443].includes(p.port));
+  const httpPort = data.find(p => [80, 8080, 8000, 8888, 3000, 9000].includes(p.port));
+  document.getElementById('enumUrl').value = httpsPort
+    ? `https://${HOST_IP}:${httpsPort.port}`
+    : httpPort ? `http://${HOST_IP}:${httpPort.port}` : `http://${HOST_IP}`;
+
+  loadWhois();
+  loadRelated();
+}
+
+/* ── Timeline chart ───────────────────────────────────────────────── */
+function drawHostTimeline(data) {
+  const el = document.getElementById('hostTimeline');
+  if (!el || !window.Chart) return;
+  const byRound = {};
+  data.forEach(p => { byRound[p.scan_round] = (byRound[p.scan_round] || 0) + 1; });
+  const rounds = Object.keys(byRound).sort((a, b) => a - b);
+  if (!rounds.length) return;
+  new Chart(el, {
+    type: 'bar',
+    data: {
+      labels: rounds.map(r => 'Round #' + r),
+      datasets: [{
+        data: rounds.map(r => byRound[r]),
+        backgroundColor: 'rgba(88,166,255,.55)',
+        borderColor: '#58a6ff',
+        borderWidth: 1,
+        borderRadius: 5,
+        maxBarThickness: 46,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false },
+        tooltip: { backgroundColor: 'rgba(13,17,23,.96)', borderColor: 'rgba(88,166,255,.35)',
+                   borderWidth: 1, titleColor: '#e6edf3', bodyColor: '#8d99a8',
+                   displayColors: false, callbacks: { label: i => i.parsed.y + ' open port(s)' } } },
+      scales: {
+        x: { ticks: { color: '#8d99a8' }, grid: { display: false }, border: { display: false } },
+        y: { beginAtZero: true, ticks: { color: '#8d99a8', precision: 0 },
+             grid: { color: 'rgba(139,170,214,.07)' }, border: { display: false } },
+      }
+    }
+  });
+}
+
+/* ── Whois + related ──────────────────────────────────────────────── */
+async function loadWhois() {
+  const w = await fetch(`/api/host/${encodeURIComponent(HOST_IP)}/whois`).then(r => r.json()).catch(() => null);
+  const el = document.getElementById('whoisBody');
+  if (!w || w.detail) { el.innerHTML = '<div class="text-dim text-sm">No registration data.</div>'; return; }
+  el.innerHTML = `
+    <div class="fact-row"><span class="fact-key">IP</span><span class="fact-val text-mono">${escHtml(w.ip)}</span></div>
+    <div class="fact-row"><span class="fact-key">Organisation</span><span class="fact-val">${escHtml(w.org || '—')}</span></div>
+    <div class="fact-row"><span class="fact-key">ASN</span><span class="fact-val text-mono">${w.asn ? 'AS' + escHtml(String(w.asn)) : '—'}</span></div>
+    <div class="fact-row"><span class="fact-key">Country</span><span class="fact-val"><span class="flag">${flag(w.country_code)}</span> ${escHtml(w.country || '—')}</span></div>
+    <div class="fact-row"><span class="fact-key">City</span><span class="fact-val">${escHtml(w.city || '—')}${w.region ? ', ' + escHtml(w.region) : ''}</span></div>
+    <div class="fact-row"><span class="fact-key">Coordinates</span><span class="fact-val text-mono text-xs">
+      ${w.latitude != null ? `${w.latitude}, ${w.longitude}` : '—'}</span></div>
+    <div class="fact-row"><span class="fact-key">Cloud</span><span class="fact-val">${escHtml(w.cloud_provider || '—')}</span></div>
+    <div class="fact-row"><span class="fact-key">Hostnames</span><span class="fact-val">
+      ${(w.hostnames || []).length ? w.hostnames.map(h => `<div class="text-mono text-sm">${escHtml(h)}</div>`).join('') : '—'}</span></div>
+    <div class="fact-row"><span class="fact-key">Domains</span><span class="fact-val text-mono text-sm">${(w.domains || []).join(', ') || '—'}</span></div>
+    <div class="fact-row"><span class="fact-key">Open ports</span><span class="fact-val text-mono">${(w.open_ports || []).join(', ')}</span></div>`;
+}
+
+async function loadRelated() {
+  const r = await fetch(`/api/host/${encodeURIComponent(HOST_IP)}/related`).then(r => r.json()).catch(() => null);
+  if (!r) return;
+  const sections = [
+    ['cert', `other host(s) share the certificate <span class="text-mono">${escHtml(r.cert_cn || '')}</span>`, 'i-certificate'],
+    ['org',  `other host(s) belong to <span class="text-mono">${escHtml(r.org_name || '')}</span>`, 'i-server'],
+    ['subnet', 'other host(s) in the same /24', 'i-layers'],
+  ].filter(([k]) => (r[k] || []).length);
+
+  if (!sections.length) { document.getElementById('relatedWrap').innerHTML = ''; return; }
+
+  document.getElementById('relatedWrap').innerHTML = sections.map(([k, label, ic]) => `
+    <div class="card mb-3" data-reveal>
+      <div class="card-title">
+        <span class="ct-icon">${icon(ic)}</span>
+        <span><strong>${r[k].length}</strong> ${label}</span>
+      </div>
+      <div class="result-list">${r[k].slice(0, 12).map(h => `
+        <a href="/host/${encodeURIComponent(h.ip)}" class="result-row">
+          <span class="result-ip">${escHtml(h.ip)}</span>
+          <span class="result-port">${h.port}</span>
+          <span class="result-service"><div>${escHtml(h.product || '—')}</div></span>
+          <span class="result-meta"></span>
+          <span class="result-badges"><span class="badge badge-none text-mono">risk ${h.risk_score || 0}</span></span>
+        </a>`).join('')}</div>
+    </div>`).join('');
+}
+
+/* ── Actions ──────────────────────────────────────────────────────── */
+function openPort(port) {
+  const card = document.getElementById('port-' + port);
+  if (card) card.classList.add('open');
+}
+
+function copyRaw() {
+  const txt = document.getElementById('rawJson').textContent;
+  navigator.clipboard?.writeText(txt).then(
+    () => toast('Raw JSON copied', 'success'),
+    () => toast('Could not copy', 'error'));
+}
+
+async function runJarm(port) {
+  const span = document.getElementById('jarm-' + port);
+  const verdict = document.getElementById('jarmVerdict-' + port);
+  span.innerHTML = '<span class="spinner"></span> probing…';
+  verdict.innerHTML = '';
+  const r = await fetch(`/api/host/${encodeURIComponent(HOST_IP)}/${port}/jarm`)
+    .then(r => r.json()).catch(() => null);
+  if (!r) { span.textContent = 'probe failed'; return; }
+  span.textContent = r.jarm;
+  if (r.is_malicious) {
+    verdict.innerHTML = `<span class="badge badge-kev">${icon('i-alert')} ${escHtml(r.actor)}</span>`;
+    toast(`JARM matches a known C2: ${r.actor}`, 'error');
+  } else if (r.responded) {
+    verdict.innerHTML = `<span class="badge badge-success">${icon('i-check')} not in C2 list</span>`;
+  } else {
+    verdict.innerHTML = '<span class="badge badge-none">no TLS response</span>';
+  }
+}
+
+async function rerunTechs(port) {
+  const r = await fetch(`/api/host/${encodeURIComponent(HOST_IP)}/${port}/techs`)
+    .then(r => r.json()).catch(() => null);
+  if (!r) { toast('Detection failed', 'error'); return; }
+  toast(`${r.count} technolog${r.count === 1 ? 'y' : 'ies'} detected on port ${port}`,
+        r.count ? 'success' : 'info');
+}
+
+async function loadHistory(port) {
+  const data = await fetch(`/api/host/${encodeURIComponent(HOST_IP)}/${port}/history`)
+    .then(r => r.json()).catch(() => []);
+  document.getElementById('histContent').innerHTML = data.length
+    ? `<div class="table-scroll"><table class="port-table">
+        <thead><tr><th>Round</th><th>Seen at</th><th>Product</th><th>Version</th><th>CVEs</th></tr></thead>
+        <tbody>${data.map(h => {
+          const rec = h.record || {};
+          return `<tr>
+            <td class="text-mono text-sm text-primary">#${h.scan_round}</td>
+            <td class="text-xs text-dim text-mono">${escHtml((h.seen_at || '').slice(0,19).replace('T',' '))}</td>
+            <td>${escHtml(rec.product || '')}</td>
+            <td>${escHtml(rec.version || '')}</td>
+            <td class="text-xs">${escHtml((rec.cves || []).slice(0,3).join(', ')) || '—'}</td>
+          </tr>`; }).join('')}</tbody></table></div>`
+    : `<div class="empty-state"><div class="empty-icon">${icon('i-clock')}</div>
+         <h3>No history</h3><p>This port has only been seen once.</p></div>`;
+}
+
+async function saveNotes() {
+  const body = {
+    ip: HOST_IP, port: 0,
+    notes: document.getElementById('noteText').value,
+    tags: document.getElementById('noteTags').value,
+    starred: document.getElementById('noteStarred').checked,
+  };
+  const r = await fetch('/api/annotate', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body) });
+  toast(r.ok ? 'Notes saved' : 'Save failed', r.ok ? 'success' : 'error');
+}
+
+async function startEnum() {
+  const url = document.getElementById('enumUrl').value.trim();
+  const wordlist = document.getElementById('enumWordlist').value;
+  if (!url) { toast('Enter a URL', 'error'); return; }
+  const r = await fetch('/api/enumerate', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url, wordlist }) }).then(r => r.json()).catch(() => null);
+  if (!r?.enum_id) { toast('Failed to start', 'error'); return; }
+  toast('Enumeration started', 'success');
+  document.getElementById('enumResults').innerHTML = `<div class="card" data-reveal>
+    <div class="card-title flex justify-between items-center">
+      <span class="flex items-center gap-2"><span class="ct-icon">${icon('i-scope')}</span> Enumerating…</span>
+      <span id="enumProg" class="text-dim text-xs text-mono">0%</span>
+    </div>
+    <div class="progress-wrap active mb-3"><div class="progress-bar" id="enumBar" style="width:0%"></div></div>
+    <div id="enumTable"></div></div>`;
+  pollEnum(r.enum_id);
+}
+
+async function pollEnum(id) {
+  const data = await fetch(`/api/enum/${id}`).then(r => r.json()).catch(() => null);
+  if (!data) return;
+  const pct = data.total > 0 ? Math.round(data.checked / data.total * 100) : 0;
+  const bar = document.getElementById('enumBar');
+  const prog = document.getElementById('enumProg');
+  const finished = data.status === 'done' || data.status === 'error';
+  if (bar) nhProgress(bar, data.status === 'done' ? 100 : pct, finished ? 'done' : 'active');
+  if (prog) prog.textContent = `${pct}% (${data.checked} / ${data.total})`;
+  if (data.results?.length) {
+    const tbl = document.getElementById('enumTable');
+    if (tbl) tbl.innerHTML = `<div class="table-scroll"><table class="port-table">
+      <thead><tr><th>URL</th><th>Status</th><th>Size</th><th>Content-Type</th></tr></thead>
+      <tbody>${data.results.map(r2 => {
+        const sc = r2.status >= 500 ? 'status-5xx' : r2.status >= 400 ? 'status-4xx'
+                 : r2.status >= 300 ? 'status-3xx' : 'status-2xx';
+        return `<tr>
+          <td><a href="${attr(r2.url)}" class="text-mono text-sm" target="_blank" rel="noopener">${escHtml(r2.url)} ${icon('i-external')}</a></td>
+          <td class="${sc} text-mono">${r2.status}</td>
+          <td class="text-xs text-dim text-mono">${r2.size}B</td>
+          <td class="text-xs text-dim">${escHtml(r2.content_type || '')}</td></tr>`;
+      }).join('')}</tbody></table></div>`;
+  }
+  if (!finished) setTimeout(() => pollEnum(id), 1200);
+  else if (prog) prog.textContent = data.status === 'done'
+    ? `Done — ${data.results?.length || 0} paths found` : 'Error';
+}
+
+loadHost();
+</script>
+{% endblock %}

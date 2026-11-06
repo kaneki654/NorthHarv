@@ -1,0 +1,61 @@
+/* NorthHarv — Core JavaScript
+   Edit this file to customize UI behavior.
+*/
+
+// ── Toast notifications ──────────────────────────────────────────────
+function toast(message, type = 'info', duration = 3500) {
+  const container = document.getElementById('toastContainer');
+  if (!container) return;
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.innerHTML = `<strong>${type === 'success' ? '✓' : type === 'error' ? '✗' : 'ℹ'}</strong> ${message}`;
+  container.appendChild(el);
+  setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity .3s'; setTimeout(() => el.remove(), 300); }, duration);
+}
+
+// ── Top nav search ───────────────────────────────────────────────────
+const topSearchForm = document.getElementById('topSearchForm');
+if (topSearchForm) {
+  topSearchForm.addEventListener('submit', e => {
+    e.preventDefault();
+    const q = document.getElementById('topSearchInput').value.trim();
+    window.location.href = '/search?q=' + encodeURIComponent(q);
+  });
+}
+
+// ── Active nav highlighting ──────────────────────────────────────────
+document.querySelectorAll('.sidebar-link').forEach(link => {
+  if (link.getAttribute('href') === window.location.pathname) {
+    link.classList.add('active');
+  }
+});
+
+// ── Banner expand on click ───────────────────────────────────────────
+document.addEventListener('click', e => {
+  const bc = e.target.closest('.banner-cell');
+  if (bc) bc.classList.toggle('expanded');
+});
+
+// ── Keyboard shortcut: / to focus search ────────────────────────────
+document.addEventListener('keydown', e => {
+  if (e.key === '/' && !e.target.matches('input,textarea,select,[contenteditable]')) {
+    e.preventDefault();
+    const inp = document.getElementById('topSearchInput') || document.getElementById('heroSearch') || document.getElementById('searchInput');
+    if (inp) { inp.focus(); inp.select(); }
+  }
+  if (e.key === 'Escape') {
+    const inp = document.activeElement;
+    if (inp.matches('input,textarea')) inp.blur();
+  }
+});
+
+// ── Tab helper (used in host.html) ───────────────────────────────────
+window.showTab = function(id) {
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    const map = { ports:'🔌', cves:'🛡', certs:'🔒', history:'🕑', notes:'📝', enumerate:'🔎' };
+    btn.classList.toggle('active', btn.textContent.trim().startsWith(map[id] || ''));
+  });
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  const panel = document.getElementById('tab-' + id);
+  if (panel) panel.classList.add('active');
+};

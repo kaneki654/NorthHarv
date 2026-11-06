@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>{% block title %}NorthHarv{% endblock %} — Cyberspace Intelligence</title>
+  <link rel="stylesheet" href="/static/css/style.css?v={{ asset_v('css/style.css') }}">
+  <link rel="stylesheet" href="/static/css/tutorial.css?v={{ asset_v('css/tutorial.css') }}">
+  <!-- flags JS as live so reveal animations can hide content without risking FOUC -->
+  <script>document.documentElement.className += ' nh-js';</script>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%2322d3ee'/><stop offset='.55' stop-color='%2338bdf8'/><stop offset='1' stop-color='%23a78bfa'/></linearGradient></defs><path d='M32 3 58 17.5V46.5L32 61 6 46.5V17.5Z' fill='none' stroke='url(%23g)' stroke-width='4.5'/><path d='M32 17 Q34.2 29.8 45 32 Q34.2 34.2 32 47 Q29.8 34.2 19 32 Q29.8 29.8 32 17Z' fill='url(%23g)'/></svg>">
+  {% block head %}{% endblock %}
+</head>
+<body>
+
+<!-- Global request indicator -->
+<div id="nhLoadBar" aria-hidden="true"></div>
+
+<!-- ══════════════════ Icon sprite ══════════════════ -->
+<svg width="0" height="0" style="position:absolute;overflow:hidden" aria-hidden="true" focusable="false">
+  <defs>
+    <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 10.6 12 3.2l9 7.4"/><path d="M5.5 9.4V20.3h13V9.4"/><path d="M9.8 20.3V14.6h4.4v5.7"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7.2"/><path d="M16.3 16.3 21 21"/></symbol>
+    <symbol id="i-flame" viewBox="0 0 24 24"><path d="M12 22c3.9 0 6-2.4 6-5.4C18 12 12 3.5 12 3.5S6 12 6 16.6C6 19.6 8.1 22 12 22z"/><path d="M12 18.2c1.3 0 2.1-.9 2.1-2 0-1.7-2.1-4.3-2.1-4.3s-2.1 2.6-2.1 4.3c0 1.1.8 2 2.1 2z"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3.3 2.2 20.4h19.6L12 3.3z"/><path d="M12 9.4v4.8"/><path d="M12 17.4h.01"/></symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3.2 12h17.6"/><path d="M12 3a14.5 14.5 0 0 1 0 18 14.5 14.5 0 0 1 0-18z"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4.8" y="10.6" width="14.4" height="10.2" rx="2.2"/><path d="M8.2 10.6V7.8a3.8 3.8 0 0 1 7.6 0v2.8"/></symbol>
+    <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13.2 2.4 4.6 13.6h5.6l-1.2 8L18.6 10h-5.7l.3-7.6z"/></symbol>
+    <symbol id="i-radio" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.1"/><path d="M7.8 16.2a6 6 0 0 1 0-8.4"/><path d="M16.2 7.8a6 6 0 0 1 0 8.4"/><path d="M4.9 19.1a10 10 0 0 1 0-14.2"/><path d="M19.1 4.9a10 10 0 0 1 0 14.2"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24"><path d="M8.5 6h12.2"/><path d="M8.5 12h12.2"/><path d="M8.5 18h12.2"/><path d="M3.6 6h.01"/><path d="M3.6 12h.01"/><path d="M3.6 18h.01"/></symbol>
+    <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8.2" cy="8.2" r="4.4"/><path d="M11.4 11.4 20.4 20.4"/><path d="M16.4 16.4 18.8 14"/></symbol>
+    <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="2.6" y="4" width="18.8" height="12.4" rx="2.2"/><path d="M8.4 20.4h7.2"/><path d="M12 16.4v4"/></symbol>
+    <symbol id="i-database" viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7.2" ry="3"/><path d="M4.8 6v12c0 1.7 3.2 3 7.2 3s7.2-1.3 7.2-3V6"/><path d="M4.8 12c0 1.7 3.2 3 7.2 3s7.2-1.3 7.2-3"/></symbol>
+    <symbol id="i-leaf" viewBox="0 0 24 24"><path d="M4 20c-.6-8 4.6-15.2 16.4-16.4C21.2 15.6 14.6 21 4 20z"/><path d="M4.4 19.8c4-4.2 8.2-7.2 12.4-9.2"/></symbol>
+    <symbol id="i-dot-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.8"/><circle cx="12" cy="12" r="3.4" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 2.6 4.6 5.5v6.1c0 4.9 3.1 8.6 7.4 9.9 4.3-1.3 7.4-5 7.4-9.9V5.5L12 2.6z"/></symbol>
+    <symbol id="i-shield-check" viewBox="0 0 24 24"><path d="M12 2.6 4.6 5.5v6.1c0 4.9 3.1 8.6 7.4 9.9 4.3-1.3 7.4-5 7.4-9.9V5.5L12 2.6z"/><path d="M8.9 11.9l2.2 2.2 4-4.2"/></symbol>
+    <symbol id="i-certificate" viewBox="0 0 24 24"><circle cx="12" cy="9.6" r="5.4"/><path d="M9.9 9.7l1.5 1.5 3-3.1"/><path d="M8.4 14.4 7.2 21.4l4.8-2.3 4.8 2.3-1.2-7"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.8"/><path d="M12 7.2V12l3.4 2"/></symbol>
+    <symbol id="i-note" viewBox="0 0 24 24"><path d="M4 20.2h4.2L19 9.4l-4.2-4.2L4 16v4.2z"/><path d="M14.2 5.6 18.4 9.8"/></symbol>
+    <symbol id="i-scope" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.8"/><circle cx="12" cy="12" r="4.4"/><path d="M12 12 19.4 4.6"/></symbol>
+    <symbol id="i-package" viewBox="0 0 24 24"><path d="M20.8 7.8 12 3 3.2 7.8v8.4L12 21l8.8-4.8V7.8z"/><path d="M3.2 7.8 12 12.6l8.8-4.8"/><path d="M12 12.6V21"/></symbol>
+    <symbol id="i-plug" viewBox="0 0 24 24"><path d="M8.8 2.6v5.2"/><path d="M15.2 2.6v5.2"/><path d="M6.8 7.8h10.4v3.4a5.2 5.2 0 0 1-10.4 0V7.8z"/><path d="M12 16.4v5"/></symbol>
+    <symbol id="i-map-pin" viewBox="0 0 24 24"><path d="M12 21.6s7-6.2 7-11.8a7 7 0 1 0-14 0c0 5.6 7 11.8 7 11.8z"/><circle cx="12" cy="9.8" r="2.6"/></symbol>
+    <symbol id="i-chip" viewBox="0 0 24 24"><rect x="5.2" y="5.2" width="13.6" height="13.6" rx="2.4"/><rect x="9.2" y="9.2" width="5.6" height="5.6" rx="1"/><path d="M9 2.6v2.6"/><path d="M15 2.6v2.6"/><path d="M9 18.8v2.6"/><path d="M15 18.8v2.6"/><path d="M2.6 9h2.6"/><path d="M2.6 15h2.6"/><path d="M18.8 9h2.6"/><path d="M18.8 15h2.6"/></symbol>
+    <symbol id="i-clipboard" viewBox="0 0 24 24"><rect x="7.4" y="2.8" width="9.2" height="4" rx="1.4"/><path d="M7.4 4.8H5.8A1.8 1.8 0 0 0 4 6.6v12.6A1.8 1.8 0 0 0 5.8 21h12.4a1.8 1.8 0 0 0 1.8-1.8V6.6a1.8 1.8 0 0 0-1.8-1.8h-1.6"/><path d="M8.4 11.4h7.2"/><path d="M8.4 15.4h5"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3.2v12"/><path d="M7.4 10.8 12 15.4l4.6-4.6"/><path d="M4 20.4h16"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M3.4 12A8.6 8.6 0 0 1 18 5.8"/><path d="M20.6 4.2v4.4h-4.4"/><path d="M20.6 12A8.6 8.6 0 0 1 6 18.2"/><path d="M3.4 19.8v-4.4h4.4"/></symbol>
+    <symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.8"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-terminal" viewBox="0 0 24 24"><rect x="2.6" y="4" width="18.8" height="16" rx="2.2"/><path d="M7 9.4l2.8 2.8L7 15"/><path d="M13 15h4.2"/></symbol>
+    <symbol id="i-compare" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.8"/><circle cx="18" cy="18" r="2.8"/><path d="M6 8.8v6.4a2.8 2.8 0 0 0 2.8 2.8h3.4"/><path d="M18 15.2V8.8A2.8 2.8 0 0 0 15.2 6h-3.4"/></symbol>
+    <symbol id="i-chev-left" viewBox="0 0 24 24"><path d="M14.4 6.6 9 12l5.4 5.4"/></symbol>
+    <symbol id="i-chev-right" viewBox="0 0 24 24"><path d="M9.6 6.6 15 12l-5.4 5.4"/></symbol>
+    <symbol id="i-command" viewBox="0 0 24 24"><path d="M18 3a3 3 0 0 0-3 3v12a3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3H6a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3V6a3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3h12a3 3 0 0 0 3-3 3 3 0 0 0-3-3z"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M4.4 12.4 9.2 17.2 19.8 6.6"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M6.2 6.2 17.8 17.8"/><path d="M17.8 6.2 6.2 17.8"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.8"/><path d="M12 11.2v5"/><path d="M12 8h.01"/></symbol>
+    <symbol id="i-star" viewBox="0 0 24 24"><path d="M12 3.2l2.75 5.6 6.15.9-4.45 4.35 1.05 6.15L12 17.3l-5.5 2.9 1.05-6.15L3.1 9.7l6.15-.9L12 3.2z"/></symbol>
+    <symbol id="i-layers" viewBox="0 0 24 24"><path d="M12 2.8 3 7.4l9 4.6 9-4.6-9-4.6z"/><path d="M3 12.4l9 4.6 9-4.6"/><path d="M3 17l9 4.6 9-4.6"/></symbol>
+    <symbol id="i-activity" viewBox="0 0 24 24"><path d="M3 12h4l2.6-6.4L14 18.6 16.6 12H21"/></symbol>
+    <symbol id="i-server" viewBox="0 0 24 24"><rect x="3" y="3.6" width="18" height="7" rx="2"/><rect x="3" y="13.4" width="18" height="7" rx="2"/><path d="M7 7.1h.01"/><path d="M7 16.9h.01"/></symbol>
+    <symbol id="i-file-text" viewBox="0 0 24 24"><path d="M14 3.4H6.8A1.8 1.8 0 0 0 5 5.2v13.6A1.8 1.8 0 0 0 6.8 20.6h10.4a1.8 1.8 0 0 0 1.8-1.8V8.4L14 3.4z"/><path d="M14 3.4v5h5"/><path d="M8.6 13h6.8"/><path d="M8.6 16.6h4.4"/></symbol>
+    <symbol id="i-sparkles" viewBox="0 0 24 24"><path d="M11 3l1.7 4.3L17 9l-4.3 1.7L11 15l-1.7-4.3L5 9l4.3-1.7L11 3z"/><path d="M18.5 14.5l.85 2.15L21.5 17.5l-2.15.85L18.5 20.5l-.85-2.15L15.5 17.5l2.15-.85L18.5 14.5z"/></symbol>
+    <symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M4.6 12h14.8"/><path d="M14 6.6 19.4 12 14 17.4"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 4.6h5.4V10"/><path d="M19.4 4.6 11.6 12.4"/><path d="M18 14v4.4a1.8 1.8 0 0 1-1.8 1.8H5.4a1.8 1.8 0 0 1-1.8-1.8V7.4a1.8 1.8 0 0 1 1.8-1.8H10"/></symbol>
+  </defs>
+</svg>
+
+<div class="app-shell">
+
+  <!-- ══════════════════ Top navigation ══════════════════ -->
+  <nav class="topnav">
+
+    <a href="/" class="logo" aria-label="NorthHarv home">
+      <!-- Logo: hexagonal radar observatory + north star -->
+      <svg class="logo-mark" viewBox="0 0 64 64" role="img" aria-hidden="true">
+        <defs>
+          <linearGradient id="nhEdge" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0"   stop-color="#22d3ee"/>
+            <stop offset=".5"  stop-color="#38bdf8"/>
+            <stop offset="1"   stop-color="#a78bfa"/>
+          </linearGradient>
+          <linearGradient id="nhStar" x1=".2" y1="0" x2=".8" y2="1">
+            <stop offset="0"   stop-color="#e0f7ff"/>
+            <stop offset=".55" stop-color="#5ccfff"/>
+            <stop offset="1"   stop-color="#a78bfa"/>
+          </linearGradient>
+          <linearGradient id="nhSweep" x1="0" y1="1" x2="1" y2="0">
+            <stop offset="0" stop-color="#5eead4" stop-opacity=".85"/>
+            <stop offset="1" stop-color="#22d3ee" stop-opacity="0"/>
+          </linearGradient>
+          <radialGradient id="nhCore" cx=".5" cy=".5" r=".5">
+            <stop offset="0"  stop-color="#38bdf8" stop-opacity=".45"/>
+            <stop offset="1"  stop-color="#38bdf8" stop-opacity="0"/>
+          </radialGradient>
+        </defs>
+
+        <!-- inner glow -->
+        <circle cx="32" cy="32" r="26" fill="url(#nhCore)"/>
+
+        <!-- hexagonal frame -->
+        <path d="M32 4 56 18v28L32 60 8 46V18Z"
+              fill="rgba(8,14,24,.55)" stroke="url(#nhEdge)" stroke-width="2.6"
+              stroke-linejoin="round"/>
+
+        <!-- radar rings -->
+        <circle cx="32" cy="32" r="22.5" fill="none" stroke="#38bdf8" stroke-opacity=".26" stroke-width="1"/>
+        <circle cx="32" cy="32" r="16" fill="none" stroke="#67e8f9" stroke-opacity=".34" stroke-width="1"
+                stroke-dasharray="2 3.4"/>
+        <!-- cardinal ticks -->
+        <g stroke="#38bdf8" stroke-opacity=".45" stroke-width="1.2" stroke-linecap="round">
+          <path d="M32 7.5v3.6"/><path d="M32 52.9v3.6"/>
+          <path d="M7.5 32h3.6"/><path d="M52.9 32h3.6"/>
+        </g>
+
+        <!-- rotating sweep wedge -->
+        <g class="lm-sweep">
+          <path d="M32 32 32 9.5 A22.5 22.5 0 0 1 51.5 20.8 Z" fill="url(#nhSweep)"/>
+          <path d="M32 32 32 9.5" stroke="#a7f3f0" stroke-width="1.3" stroke-opacity="1"/>
+        </g>
+
+        <!-- expanding ping -->
+        <circle class="lm-ping" cx="32" cy="32" r="18" fill="none"
+                stroke="#22d3ee" stroke-width="1.8"/>
+
+        <!-- north star -->
+        <g class="lm-star">
+          <path d="M32 14 Q34 29.8 44.5 32 Q34 34.2 32 50 Q30 34.2 19.5 32 Q30 29.8 32 14Z"
+                fill="url(#nhStar)"/>
+          <path d="M32 23.5 Q32.8 31.2 37.5 32 Q32.8 32.8 32 40.5 Q31.2 32.8 26.5 32 Q31.2 31.2 32 23.5Z"
+                fill="#f6fdff" fill-opacity=".95"/>
+        </g>
+
+        <!-- vertex ticks -->
+        <circle class="lm-tick"    cx="32" cy="4"  r="1.9" fill="#67e8f9"/>
+        <circle class="lm-tick d2" cx="56" cy="46" r="1.6" fill="#a78bfa"/>
+        <circle class="lm-tick d3" cx="8"  cy="46" r="1.6" fill="#38bdf8"/>
+      </svg>
+
+      <span class="logo-text">
+        <span class="logo-word">North<b>Harv</b></span>
+        <span class="logo-sub">Cyberspace Intel</span>
+      </span>
+    </a>
+
+    <form class="nav-search" action="/search" method="get" id="topSearchForm" role="search">
+      <input type="text" name="q" id="topSearchInput"
+             placeholder="port:443   product:nginx   cve:CVE-2024   kev:true"
+             value="{{ request.query_params.get('q', '') }}"
+             autocomplete="off" spellcheck="false" aria-label="Search hosts">
+      <span class="search-icon"><svg class="icon"><use href="#i-search"/></svg></span>
+      <span class="kbd-hint"><kbd class="kbd">/</kbd></span>
+    </form>
+
+    <div class="nav-actions">
+      <a href="/scan" class="nav-link {% if request.url.path == '/scan' %}active{% endif %}">
+        <svg class="icon"><use href="#i-bolt"/></svg><span>Scan</span>
+      </a>
+      <a href="/feeds" class="nav-link {% if request.url.path == '/feeds' %}active{% endif %}">
+        <svg class="icon"><use href="#i-radio"/></svg><span>Feeds</span>
+      </a>
+      <button type="button" class="nav-cmd" id="cmdkBtn" title="Command palette (Ctrl+K)">
+        <svg class="icon"><use href="#i-command"/></svg>
+        <kbd class="kbd">K</kbd>
+      </button>
+    </div>
+  </nav>
+
+  <!-- ══════════════════ Sidebar ══════════════════ -->
+  <aside class="sidebar">
+    <div class="sidebar-label">Explore</div>
+    <a href="/" class="sidebar-link {% if request.url.path == '/' %}active{% endif %}">
+      <span class="sidebar-icon"><svg class="icon"><use href="#i-home"/></svg></span> Dashboard
+    </a>
+    <a href="/search" class="sidebar-link {% if request.url.path == '/search' %}active{% endif %}">
+      <span class="sidebar-icon"><svg class="icon"><use href="#i-search"/></svg></span> Search
+    </a>
+    <a href="/explore" class="sidebar-link {% if request.url.path == '/explore' %}active{% endif %}">
+      <span class="sidebar-icon"><svg class="icon"><use href="#i-scope"/></svg></span> Explore
+    </a>
+    <a href="/search?q=kev:true" class="sidebar-link">
+      <span class="sidebar-icon" style="color:var(--danger)"><svg class="icon"><use href="#i-flame"/></svg></span> KEV Hits
+    </a>
+    <a href="/search?q=risk:900" class="sidebar-link">
+      <span class="sidebar-icon" style="color:var(--critical)"><svg class="icon"><use href="#i-alert"/></svg></span> Critical
+    </a>
+    <a href="/search?q=service:http" class="sidebar-link">
+      <span class="sidebar-icon"><svg class="icon"><use href="#i-globe"/></svg></span> HTTP Hosts
+    </a>
+    <a href="/search?q=has:tls" class="sidebar-link">
+      <span class="sidebar-icon"><svg class="icon"><use href="#i-lock"/></svg></span> TLS / SSL
+    </a>
+
+    <div class="sidebar-label">Intelligence</div>
+    <a href="/changes" class="sidebar-link {% if request.url.path == '/changes' %}active{% endif %}">
+      <span class="sidebar-icon"><svg class="icon"><use href="#i-activity"/></svg></span> Changes
+    </a>
+    <a href="/map" class="sidebar-link {% if request.url.path == '/map' %}active{% endif %}">
+      <span class="sidebar-icon"><svg class="icon"><use href="#i-layers"/></svg></span> Network Map
+    </a>
+    <a href="/timeline" class="sidebar-link {% if request.url.path == '/timeline' %}active{% endif %}">
+      <span class="sidebar-icon"><svg class="icon"><use href="#i-clock"/></svg></span> Timeline
+    </a>
+    <a href="/watchlist" class="sidebar-link {% if request.url.path == '/watchlist' %}active{% endif %}">
+      <span class="sidebar-icon"><svg class="icon"><use href="#i-star"/></svg></span> Watchlist
+    </a>
+    <a href="/api/report" class="sidebar-link" target="_blank" rel="noopener" download>
+      <span class="sidebar-icon"><svg class="icon"><use href="#i-file-text"/></svg></span> Report
+    </a>
+
+    <div class="sidebar-label">Operations</div>
+    <a href="/scan" class="sidebar-link {% if request.url.path == '/scan' %}active{% endif %}">
+      <span class="sidebar-icon"><svg class="icon"><use href="#i-bolt"/></svg></span> Scan Manager
+    </a>
+    <a href="/feeds" class="sidebar-link {% if request.url.path == '/feeds' %}active{% endif %}">
+      <span class="sidebar-icon"><svg class="icon"><use href="#i-radio"/></svg></span> Feed Sync
+    </a>
+    <a href="/wordlists" class="sidebar-link {% if request.url.path == '/wordlists' %}active{% endif %}">
+      <span class="sidebar-icon"><svg class="icon"><use href="#i-scope"/></svg></span> Discovery Engine
+    </a>
+
+    <div class="sidebar-label">Quick Filters</div>
+    <a href="/search?q=port:22" class="sidebar-link">
+      <span class="sidebar-icon"><svg class="icon"><use href="#i-key"/></svg></span> SSH <span class="sb-count">22</span>
+    </a>
+    <a href="/search?q=port:80" class="sidebar-link">
+      <span class="sidebar-icon"><svg class="icon"><use href="#i-globe"/></svg></span> HTTP <span class="sb-count">80</span>
+    </a>
+    <a href="/search?q=port:443" class="sidebar-link">
+      <span class="sidebar-icon"><svg class="icon"><use href="#i-lock"/></svg></span> HTTPS <span class="sb-count">443</span>
+    </a>
+    <a href="/search?q=port:3389" class="sidebar-link">
+      <span class="sidebar-icon"><svg class="icon"><use href="#i-monitor"/></svg></span> RDP <span class="sb-count">3389</span>
+    </a>
+    <a href="/search?q=port:3306" class="sidebar-link">
+      <span class="sidebar-icon"><svg class="icon"><use href="#i-database"/></svg></span> MySQL <span class="sb-count">3306</span>
+    </a>
+    <a href="/search?q=port:27017" class="sidebar-link">
+      <span class="sidebar-icon"><svg class="icon"><use href="#i-leaf"/></svg></span> MongoDB <span class="sb-count">27017</span>
+    </a>
+    <a href="/search?q=port:6379" class="sidebar-link">
+      <span class="sidebar-icon" style="color:var(--danger)"><svg class="icon"><use href="#i-dot-circle"/></svg></span> Redis <span class="sb-count">6379</span>
+    </a>
+  </aside>
+
+  <!-- ══════════════════ Main content ══════════════════ -->
+  <main class="main-content">
+    {% block content %}{% endblock %}
+  </main>
+
+</div>
+
+<!-- Toasts -->
+<div class="toast-container" id="toastContainer"></div>
+
+<!-- ══════════════════ Command palette ══════════════════ -->
+<div class="cmdk-overlay" id="cmdkOverlay" role="dialog" aria-modal="true" aria-label="Command palette">
+  <div class="cmdk">
+    <div class="cmdk-head">
+      <svg class="icon"><use href="#i-search"/></svg>
+      <input type="text" id="cmdkInput" placeholder="Jump to a page or run a query…"
+             autocomplete="off" spellcheck="false">
+      <kbd class="kbd">Esc</kbd>
+    </div>
+    <div class="cmdk-list" id="cmdkList"></div>
+    <div class="cmdk-foot">
+      <span><kbd class="kbd">↑</kbd><kbd class="kbd">↓</kbd> navigate</span>
+      <span><kbd class="kbd">↵</kbd> open</span>
+      <span style="margin-left:auto">Type anything to search hosts</span>
+    </div>
+  </div>
+</div>
+
+<script src="/static/js/main.js?v={{ asset_v('js/main.js') }}"></script>
+{% block scripts %}{% endblock %}
+<!-- guided tour: self-contained overlay, runs once then on demand -->
+<script src="/static/js/tutorial.js?v={{ asset_v('js/tutorial.js') }}" defer></script>
+</body>
+</html>

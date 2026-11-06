@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+{% block title %}Change Intelligence{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="page-title">
+    <span class="pt-icon"><svg class="icon"><use href="#i-activity"/></svg></span>
+    Change Intelligence
+  </div>
+  <div class="page-sub">What moved on the network since the last scan rounds.</div>
+</div>
+
+<div class="flex items-center justify-between mb-3 gap-2" style="flex-wrap:wrap">
+  <div class="change-filters" id="changeFilters">
+    <button class="btn btn-ghost btn-sm" data-hours="1">Last 1h</button>
+    <button class="btn btn-ghost btn-sm" data-hours="6">6h</button>
+    <button class="btn btn-primary btn-sm" data-hours="24">24h</button>
+    <button class="btn btn-ghost btn-sm" data-hours="168">7d</button>
+    <button class="btn btn-ghost btn-sm" data-hours="720">30d</button>
+  </div>
+  <span class="text-xs text-dim flex items-center gap-2">
+    <span class="live-dot" aria-hidden="true"></span>
+    <span id="refreshNote">auto-refreshing every 60s</span>
+  </span>
+</div>
+
+<div class="stats-grid" id="changeStats">
+  <div class="stat-tile skeleton" style="height:96px"></div>
+  <div class="stat-tile skeleton" style="height:96px"></div>
+  <div class="stat-tile skeleton" style="height:96px"></div>
+  <div class="stat-tile skeleton" style="height:96px"></div>
+</div>
+
+<div class="card" data-reveal>
+  <div class="card-title flex justify-between items-center">
+    <span class="flex items-center gap-2">
+      <span class="ct-icon"><svg class="icon"><use href="#i-compare"/></svg></span>
+      <span id="changeHeading">Changes</span>
+    </span>
+    <button class="btn btn-ghost btn-xs" onclick="loadChanges()">
+      <svg class="icon"><use href="#i-refresh"/></svg> Refresh
+    </button>
+  </div>
+  <div id="changeList">
+    <div class="skeleton skeleton-text" style="height:40px"></div>
+    <div class="skeleton skeleton-text" style="height:40px"></div>
+    <div class="skeleton skeleton-text" style="height:40px"></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let currentHours = 24;
+let timer = null;
+
+function icon(n) { return `<svg class="icon"><use href="#${n}"/></svg>`; }
+function escHtml(s) {
+  return (s == null ? '' : String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+const LABEL = {
+  new_host: 'New host', port_opened: 'Port opened', service_changed: 'Service changed',
+  new_cve: 'New CVE', severity_worsened: 'Severity up', port_closed: 'Port closed',
+};
+
+function when(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d)) return String(iso).slice(0, 16).replace('T', ' ');
+  const mins = Math.round((Date.now() - d.getTime()) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return mins + 'm ago';
+  if (mins < 1440) return Math.round(mins / 60) + 'h ago';
+  return Math.round(mins / 1440) + 'd ago';
+}
+
+async function loadChanges() {
+  const data = await fetch(`/api/changes?since_hours=${currentHours}`)
+    .then(r => r.json()).catch(() => null);
+  if (!data) {
+    document.getElementById('changeList').innerHTML =
+      `<div class="empty-state"><div class="empty-icon">${icon('i-alert')}</div>
+         <h3>Could not load changes</h3></div>`;
+    return;
+  }
+
+  const s = data.summary || {};
+  document.getElementById('changeStats').innerHTML = `
+    <div class="stat-tile success" data-reveal>
+      <div class="stat-head"><div>
+        <div class="stat-label">New hosts</div>
+        <div class="stat-value" data-count="${s.new_host || 0}">0</div></div>
+        <span class="st-icon">${icon('i-sparkles')}</span></div>
+      <div class="stat-sub">First time seen in this window</div>
+    </div>
+    <div class="stat-tile primary" data-reveal>
+      <div class="stat-head"><div>
+        <div class="stat-label">Ports opened</div>
+        <div class="stat-value" data-count="${s.port_opened || 0}">0</div></div>
+        <span class="st-icon">${icon('i-plug')}</span></div>
+      <div class="stat-sub">New services on known hosts</div>
+    </div>
+    <div class="stat-tile warning" data-reveal>
+      <div class="stat-head"><div>
+        <div class="stat-label">Services changed</div>
+        <div class="stat-value" data-count="${s.service_changed || 0}">0</div></div>
+        <span class="st-icon">${icon('i-note')}</span></div>
+      <div class="stat-sub">Product or version drift</div>
+    </div>
+    <div class="stat-tile danger" data-reveal>
+      <div class="stat-head"><div>
+        <div class="stat-label">New CVEs</div>
+        <div class="stat-value" data-count="${(s.new_cve || 0) + (s.severity_worsened || 0)}">0</div></div>
+        <span class="st-icon">${icon('i-flame')}</span></div>
+      <div class="stat-sub">${s.severity_worsened || 0} with worsened severity</div>
+    </div>`;
+
+  document.getElementById('changeHeading').textContent =
+    `${data.count} change${data.count === 1 ? '' : 's'} in the last ${currentHours}h`;
+
+  const rows = data.changes || [];
+  document.getElementById('changeList').innerHTML = rows.length ? `
+    <div class="result-list">${rows.map(c => `
+      <div class="change-row" data-reveal>
+        <span><span class="badge badge-${escHtml(c.type)}">${escHtml(LABEL[c.type] || c.type)}</span></span>
+        <a href="/host/${encodeURIComponent(c.ip)}" class="result-ip">${escHtml(c.ip)}<span class="text-dim">:${c.port}</span></a>
+        <span class="change-delta">
+          ${c.field ? `<span class="text-xs text-dim text-mono">${escHtml(c.field)}</span>` : ''}
+          ${c.old ? `<span class="change-old">${escHtml(String(c.old).slice(0,42))}</span>` : ''}
+          ${c.old ? `<span class="change-arrow">${icon('i-arrow-right')}</span>` : ''}
+          <span class="change-new">${escHtml(String(c.new).slice(0,52) || '—')}</span>
+        </span>
+        <span class="text-xs text-dim text-mono" style="text-align:right">
+          round #${c.round} · ${escHtml(when(c.at))}
+        </span>
+      </div>`).join('')}</div>`
+    : `<div class="empty-state"><div class="empty-icon">${icon('i-check')}</div>
+         <h3>Nothing changed</h3>
+         <p>No differences recorded in the last ${currentHours} hours.</p></div>`;
+}
+
+document.getElementById('changeFilters').addEventListener('click', e => {
+  const btn = e.target.closest('button[data-hours]');
+  if (!btn) return;
+  currentHours = parseInt(btn.dataset.hours, 10);
+  document.querySelectorAll('#changeFilters button').forEach(b => {
+    b.className = b === btn ? 'btn btn-primary btn-sm' : 'btn btn-ghost btn-sm';
+  });
+  loadChanges();
+});
+
+loadChanges();
+timer = setInterval(loadChanges, 60000);
+</script>
+{% endblock %}

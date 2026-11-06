@@ -1,0 +1,510 @@
+{% extends "base.html" %}
+{% block title %}Network Map{% endblock %}
+
+{% block head %}
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<style>
+/* ══════════════════════════════════════════════════════════════════
+   Deep-sky backdrop for the network map.
+
+   Three stacked layers inside .map-wrap, below the graph:
+     .map-sky-base   a CSS starfield that is always there
+     .map-sky-video  the live galaxy footage, faded in once it plays
+     .map-sky-veil   a vignette so nodes and panels stay readable
+
+   The starfield is not decoration for its own sake — the video is a
+   remote file, so without something beneath it the map would be a
+   black rectangle whenever that file is slow, blocked or offline.
+   ══════════════════════════════════════════════════════════════ */
+.map-wrap { background: #04060c; }
+
+.map-sky {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.map-sky-base {
+  position: absolute;
+  inset: -10%;
+  background-color: #04060c;
+  background-image:
+    radial-gradient(1.5px 1.5px at 12% 18%, #ffffff, transparent 62%),
+    radial-gradient(1.1px 1.1px at 78% 34%, #cfe4ff, transparent 62%),
+    radial-gradient(1px   1px   at 42% 72%, #ffffff, transparent 62%),
+    radial-gradient(1.7px 1.7px at 88% 82%, #ffd9b0, transparent 62%),
+    radial-gradient(1px   1px   at 60% 12%, #ffffff, transparent 62%),
+    radial-gradient(1.2px 1.2px at 26% 88%, #bcd4ff, transparent 62%),
+    radial-gradient(1px   1px   at 95% 55%, #ffffff, transparent 62%),
+    radial-gradient(1.3px 1.3px at  6% 58%, #ffffff, transparent 62%),
+    radial-gradient(1px   1px   at 34% 44%, #e8f0ff, transparent 62%),
+    radial-gradient(1.4px 1.4px at 68% 92%, #ffffff, transparent 62%);
+  background-size: 440px 440px;
+  animation: skyDrift 300s linear infinite;
+}
+@keyframes skyDrift {
+  from { background-position: 0 0; }
+  to   { background-position: 440px 880px; }
+}
+
+.map-sky-neb {
+  position: absolute;
+  inset: -15%;
+  background:
+    radial-gradient(44% 38% at 22% 28%, rgba(88, 166, 255, .17), transparent 70%),
+    radial-gradient(40% 34% at 78% 68%, rgba(163, 113, 247, .15), transparent 70%),
+    radial-gradient(56% 46% at 55% 52%, rgba(57, 208, 216, .09), transparent 75%);
+  animation: nebDrift 120s ease-in-out infinite alternate;
+}
+@keyframes nebDrift {
+  from { transform: translate3d(-2%, -1%, 0) scale(1);    opacity: .85; }
+  to   { transform: translate3d( 2%,  2%, 0) scale(1.08); opacity: 1; }
+}
+
+.map-sky-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  filter: saturate(1.4) contrast(1.1) brightness(1.12);
+  transition: opacity 1.8s var(--ease);
+}
+.map-sky-video.is-live { opacity: 1; }
+
+/* Colour grade laid OVER the footage. Screen blending can only lighten,
+   so every real star and galaxy stays exactly where it is while the
+   black between them picks up a nebula glow — that is the difference
+   between a raw deep-field clip and a galaxy-sky wallpaper. The wide
+   flat ellipse through the middle reads as a galactic band. */
+.map-sky-glow {
+  position: absolute;
+  inset: -14%;
+  mix-blend-mode: screen;
+  background:
+    radial-gradient(38% 30% at 24% 30%, rgba(139,  92, 246, .34), transparent 70%),
+    radial-gradient(34% 28% at 78% 64%, rgba(236,  72, 153, .22), transparent 70%),
+    radial-gradient(44% 34% at 60% 20%, rgba( 56, 189, 248, .20), transparent 72%),
+    radial-gradient(70% 16% at 50% 52%, rgba(196, 181, 253, .20), transparent 76%),
+    radial-gradient(30% 26% at 12% 78%, rgba( 45, 212, 191, .14), transparent 70%);
+  animation: glowDrift 70s ease-in-out infinite alternate;
+}
+@keyframes glowDrift {
+  from { transform: translate3d(-3%, -2%, 0) rotate(-3deg) scale(1); }
+  to   { transform: translate3d( 3%,  2%, 0) rotate( 3deg) scale(1.12); }
+}
+
+/* Only the rim is darkened now — enough to seat the panels and stop
+   the edges fighting the graph, without dimming the sky itself. */
+.map-sky-veil {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(80% 85% at 50% 50%, transparent 45%, rgba(4, 6, 12, .55) 100%),
+    linear-gradient(180deg, rgba(4, 6, 12, .28), transparent 20%, transparent 82%, rgba(4, 6, 12, .32));
+}
+
+/* graph and chrome sit above the sky */
+#mapSvg { position: relative; z-index: 1; }
+.map-overlay { z-index: 3; }
+#mapTooltip { z-index: 4; }
+
+/* ── Stars ─────────────────────────────────────────────────────── */
+.map-star { cursor: pointer; }
+.map-star-glow { transition: opacity .18s var(--ease); }
+.map-star:hover .map-star-glow { opacity: 1; }
+.map-star:hover .map-star-core { r: 3.4; }
+
+.map-star-core {
+  fill: #ffffff;
+  transition: r .18s var(--ease);
+}
+
+/* every star breathes slightly, on its own offset */
+.map-twinkle { animation: twinkle 4.6s ease-in-out infinite; }
+@keyframes twinkle {
+  0%, 100% { opacity: .82; }
+  50%      { opacity: 1; }
+}
+
+/* actively-exploited hosts get a corona that will not be missed */
+.map-corona {
+  fill: none;
+  stroke: #ff6b6b;
+  stroke-width: 1.2;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: corona 2.6s var(--ease) infinite;
+}
+@keyframes corona {
+  0%   { transform: scale(.75); opacity: .85; }
+  70%  { transform: scale(1.9);  opacity: 0; }
+  100% { transform: scale(1.9);  opacity: 0; }
+}
+
+.map-edge {
+  stroke-opacity: .26;
+  stroke-linecap: round;
+  transition: stroke-opacity .2s var(--ease);
+}
+.map-edge-halo { stroke-opacity: .07; stroke-linecap: round; }
+
+/* the empty state has to sit above the sky, not replace it */
+.map-empty {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  place-content: center;
+  text-align: center;
+}
+
+.map-credit {
+  position: absolute;
+  right: .6rem;
+  bottom: .5rem;
+  z-index: 3;
+  font-size: .6rem;
+  letter-spacing: .04em;
+  color: rgba(190, 205, 225, .34);
+  pointer-events: auto;
+}
+.map-credit a { color: inherit; text-decoration: none; border-bottom: 1px dotted rgba(190,205,225,.3); }
+.map-credit a:hover { color: rgba(214, 228, 248, .75); }
+
+@media (prefers-reduced-motion: reduce) {
+  .map-sky-base, .map-sky-neb, .map-sky-glow, .map-twinkle, .map-corona { animation: none; }
+  .map-sky-video { display: none; }
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="page-title">
+    <span class="pt-icon"><svg class="icon"><use href="#i-layers"/></svg></span>
+    Network Map
+  </div>
+  <div class="page-sub">
+    Every observed host as a star. Links are shared certificates, shared
+    organisations and shared /24s — the gravity that holds a cluster together.
+  </div>
+</div>
+
+<div class="map-wrap" id="mapWrap" data-reveal>
+  <!-- ══ deep sky ══ -->
+  <div class="map-sky" aria-hidden="true">
+    <div class="map-sky-base"></div>
+    <div class="map-sky-neb"></div>
+    <!-- Primary: NASA Goddard's "Flying Through Galaxies" (SVS 14950),
+         a 1080p fly-through of a deep field packed with spiral and
+         elliptical galaxies, no on-screen text.
+         Fallback, on a different host so one outage cannot blank both:
+         Hubble's Orion fly-through via Wikimedia's VP9 transcodes. Not
+         the .ogv it was uploaded as — Chrome dropped Ogg Theora in M123.
+         Rejected: NASA's Milky Way animation, which carries burned-in
+         "Sun" and "Orion Spur" labels across the frame. -->
+    <video class="map-sky-video" id="mapSkyVideo"
+           autoplay muted loop playsinline preload="auto">
+      <source src="https://svs.gsfc.nasa.gov/vis/a010000/a014900/a014950/14950_Galaxies_FlyThrough_1080.mp4" type="video/mp4">
+      <source src="https://upload.wikimedia.org/wikipedia/commons/transcoded/d/d7/Orion_Nebula_3D_Fly-Through_-_HST.ogv/Orion_Nebula_3D_Fly-Through_-_HST.ogv.720p.vp9.webm" type="video/webm">
+      <source src="https://upload.wikimedia.org/wikipedia/commons/transcoded/d/d7/Orion_Nebula_3D_Fly-Through_-_HST.ogv/Orion_Nebula_3D_Fly-Through_-_HST.ogv.480p.vp9.webm" type="video/webm">
+    </video>
+    <div class="map-sky-glow"></div>
+    <div class="map-sky-veil"></div>
+  </div>
+
+  <svg id="mapSvg" role="img" aria-label="Network relationship graph"></svg>
+
+  <div class="map-overlay">
+    <div class="map-panel">
+      <h4>Severity</h4>
+      <div class="map-legend-row"><span class="map-dot" style="background:#f85149"></span> Critical</div>
+      <div class="map-legend-row"><span class="map-dot" style="background:#fb8500"></span> High</div>
+      <div class="map-legend-row"><span class="map-dot" style="background:#d29922"></span> Medium</div>
+      <div class="map-legend-row"><span class="map-dot" style="background:#58a6ff"></span> Low</div>
+      <div class="map-legend-row"><span class="map-dot" style="background:#6b7585"></span> None</div>
+    </div>
+
+    <div class="map-panel">
+      <h4>Edges</h4>
+      <label class="map-toggle">
+        <input type="checkbox" data-edge="ssl_cert" checked>
+        <span class="map-line" style="background:#39d0d8"></span> Shared certificate
+      </label>
+      <label class="map-toggle">
+        <input type="checkbox" data-edge="same_org" checked>
+        <span class="map-line" style="background:#a371f7"></span> Same organisation
+      </label>
+      <label class="map-toggle">
+        <input type="checkbox" data-edge="same_subnet" checked>
+        <span class="map-line" style="background:#58a6ff"></span> Same /24
+      </label>
+    </div>
+
+    <div class="map-panel">
+      <h4>Filter</h4>
+      <label class="map-toggle" style="display:block">
+        <span class="text-xs text-dim">Minimum risk</span>
+        <input type="range" id="riskFilter" min="0" max="1000" step="50" value="0"
+               style="width:140px;display:block;margin:.3rem 0">
+        <span class="text-xs text-mono" id="riskFilterVal">0</span>
+      </label>
+      <div class="flex gap-1 mt-2">
+        <button class="btn btn-ghost btn-xs" id="zoomIn">+</button>
+        <button class="btn btn-ghost btn-xs" id="zoomOut">−</button>
+        <button class="btn btn-ghost btn-xs" id="zoomReset">Reset</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="mapTooltip"></div>
+
+  <!-- filled in once a source is actually playing, so it always names
+       the footage on screen rather than the one we hoped for -->
+  <div class="map-credit" id="mapCredit"></div>
+</div>
+
+<div class="flex items-center gap-3 mt-2 text-xs text-dim" id="mapStats">
+  <span class="spinner"></span> Building graph…
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const SEV_COLOR = {
+  CRITICAL: '#f85149', HIGH: '#fb8500', MEDIUM: '#d29922',
+  LOW: '#58a6ff', NONE: '#6b7585',
+};
+const EDGE_COLOR = { ssl_cert: '#39d0d8', same_org: '#a371f7', same_subnet: '#58a6ff' };
+
+function escHtml(s) {
+  return (s == null ? '' : String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+/* Fade the footage in only once it is actually playing. If the file is
+   slow, blocked or simply unreachable, the CSS starfield underneath is
+   what you keep looking at, and nothing on the page reports an error. */
+(function skyVideo() {
+  const v = document.getElementById('mapSkyVideo');
+  if (!v) return;
+
+  const CREDITS = [
+    ['svs.gsfc.nasa.gov', 'https://svs.gsfc.nasa.gov/14950/', 'Flying Through Galaxies',
+     "NASA's Goddard Space Flight Center / Conceptual Image Lab"],
+    ['Orion_Nebula', 'https://commons.wikimedia.org/wiki/File:Orion_Nebula_3D_Fly-Through_-_HST.ogv',
+     'Orion Nebula 3D fly-through', 'NASA/STScI, public domain'],
+  ];
+  const credit = document.getElementById('mapCredit');
+  const setCredit = () => {
+    const c = CREDITS.find(([k]) => (v.currentSrc || '').includes(k));
+    if (c && credit) {
+      credit.innerHTML = `backdrop: <a href="${c[1]}" target="_blank" rel="noopener">${c[2]}</a> — ${c[3]}`;
+    }
+  };
+
+  const show = () => { v.classList.add('is-live'); setCredit(); };
+  v.addEventListener('playing', show);
+  v.addEventListener('canplay', show);
+  /* Only the video element's own error means every <source> failed. A
+     single bad source is the browser's job to step past, so this must
+     not listen in the capture phase — doing that caught the first
+     source's failure and tore the element down before the next was
+     ever tried. */
+  v.addEventListener('error', () => { v.style.display = 'none'; });
+
+  /* A slow host must not hold the backdrop hostage. Measured in the
+     browser, the NASA host took ~20 s to produce a first frame on a
+     cold load while the Wikimedia mirror was ready in well under ten.
+     So: if the current source has not produced a frame in time, move
+     to the next one instead of leaving the page on the fallback sky. */
+  const SOURCES = [...v.querySelectorAll('source')].map(s => s.src);
+  let srcIdx = 0;
+  let timer = null;
+  const play = () => { const p = v.play(); if (p && p.catch) p.catch(() => {}); };
+  const tryNext = () => {
+    if (v.readyState >= 2 || ++srcIdx >= SOURCES.length) return;
+    v.src = SOURCES[srcIdx];
+    v.load();
+    play();
+    timer = setTimeout(tryNext, 9000);
+  };
+  timer = setTimeout(tryNext, 7000);
+  v.addEventListener('canplay', () => clearTimeout(timer));
+
+  // autoplay can be refused even when muted; a silent retry costs nothing
+  play();
+})();
+
+(async function buildMap() {
+  const data = await fetch('/api/graph?limit=400').then(r => r.json()).catch(() => null);
+  const statsEl = document.getElementById('mapStats');
+  const wrap = document.getElementById('mapWrap');
+
+  if (!data || !data.nodes || !data.nodes.length) {
+    /* insert, never innerHTML the wrapper — that would delete the sky */
+    const empty = document.createElement('div');
+    empty.className = 'map-empty';
+    empty.innerHTML =
+      `<div class="empty-icon"><svg class="icon"><use href="#i-layers"/></svg></div>
+       <h3>No hosts to map</h3>
+       <p>Scanned hosts appear here as a star cluster.</p>`;
+    wrap.appendChild(empty);
+    statsEl.textContent = '';
+    return;
+  }
+
+  const svg = d3.select('#mapSvg');
+  const tooltip = document.getElementById('mapTooltip');
+  let width = wrap.clientWidth, height = wrap.clientHeight;
+
+  const nodes = data.nodes.map(d => Object.assign({}, d));
+  const byId = new Map(nodes.map(n => [n.id, n]));
+  const links = (data.edges || [])
+    .filter(e => byId.has(e.src) && byId.has(e.dst))
+    .map(e => ({ source: e.src, target: e.dst, reason: e.reason, key: e.key }));
+
+  statsEl.innerHTML =
+    `<span><strong class="text-primary">${nodes.length}</strong> stars</span>` +
+    `<span><strong class="text-primary">${links.length}</strong> relationships</span>` +
+    `<span class="text-dim">drag to rearrange · scroll to zoom · click a star to open it</span>`;
+
+  /* ── one radial gradient per severity: white core, coloured corona,
+        transparent rim. One circle per node then reads as a star. ── */
+  const defs = svg.append('defs');
+  Object.entries(SEV_COLOR).forEach(([sev, c]) => {
+    const g = defs.append('radialGradient').attr('id', 'star-' + sev);
+    [['0%', '#ffffff', .95], ['16%', c, .95], ['42%', c, .34], ['100%', c, 0]]
+      .forEach(([o, col, op]) => g.append('stop')
+        .attr('offset', o).attr('stop-color', col).attr('stop-opacity', op));
+  });
+
+  const root = svg.append('g');
+
+  /* edges: a wide faint halo under a thin bright thread */
+  const edgeG = root.append('g').attr('class', 'links');
+  const haloSel = edgeG.selectAll('line.map-edge-halo').data(links).join('line')
+      .attr('class', 'map-edge-halo')
+      .attr('stroke', d => EDGE_COLOR[d.reason] || '#58a6ff')
+      .attr('stroke-width', d => d.reason === 'ssl_cert' ? 7 : 4);
+  const linkSel = edgeG.selectAll('line.map-edge').data(links).join('line')
+      .attr('class', 'map-edge')
+      .attr('stroke', d => EDGE_COLOR[d.reason] || '#58a6ff')
+      .attr('stroke-width', d => d.reason === 'ssl_cert' ? 1.6 : .9);
+
+  /* physical radius drives the layout; the glow is drawn much larger */
+  const radius = d => 5 + Math.sqrt(Math.max(0, d.risk)) / 3.2;
+  const glow = d => radius(d) * 2.7;
+
+  const starSel = root.append('g').attr('class', 'nodes')
+    .selectAll('g').data(nodes).join('g')
+      .attr('class', 'map-star');
+
+  starSel.filter(d => d.kev)
+    .append('circle')
+      .attr('class', 'map-corona')
+      .attr('r', d => radius(d) + 3)
+      .style('animation-delay', () => (Math.random() * 2.6).toFixed(2) + 's');
+
+  starSel.append('circle')
+      .attr('class', 'map-star-glow map-twinkle')
+      .attr('r', glow)
+      .attr('fill', d => `url(#star-${SEV_COLOR[d.severity] ? d.severity : 'NONE'})`)
+      .style('animation-delay', () => (Math.random() * 4.6).toFixed(2) + 's');
+
+  starSel.append('circle')
+      .attr('class', 'map-star-core')
+      .attr('r', d => Math.max(1.1, radius(d) * .34))
+      .attr('pointer-events', 'none');
+
+  starSel.append('title').text(d => d.ip);
+
+  const sim = d3.forceSimulation(nodes)
+    .force('link', d3.forceLink(links).id(d => d.id)
+      .distance(l => l.reason === 'ssl_cert' ? 60 : 105).strength(.25))
+    .force('charge', d3.forceManyBody().strength(-190))
+    .force('center', d3.forceCenter(width / 2, height / 2))
+    .force('collide', d3.forceCollide().radius(d => radius(d) + 8))
+    .on('tick', () => {
+      const x1 = d => d.source.x, y1 = d => d.source.y,
+            x2 = d => d.target.x, y2 = d => d.target.y;
+      linkSel.attr('x1', x1).attr('y1', y1).attr('x2', x2).attr('y2', y2);
+      haloSel.attr('x1', x1).attr('y1', y1).attr('x2', x2).attr('y2', y2);
+      starSel.attr('transform', d => `translate(${d.x},${d.y})`);
+    });
+
+  // ── zoom / pan ────────────────────────────────────────────────────────
+  const zoom = d3.zoom().scaleExtent([0.2, 6])
+    .on('zoom', e => root.attr('transform', e.transform));
+  svg.call(zoom);
+  document.getElementById('zoomIn').onclick = () => svg.transition().duration(250).call(zoom.scaleBy, 1.4);
+  document.getElementById('zoomOut').onclick = () => svg.transition().duration(250).call(zoom.scaleBy, 1 / 1.4);
+  document.getElementById('zoomReset').onclick = () => svg.transition().duration(300).call(zoom.transform, d3.zoomIdentity);
+
+  // ── drag ──────────────────────────────────────────────────────────────
+  starSel.call(d3.drag()
+    .on('start', (e, d) => { if (!e.active) sim.alphaTarget(.3).restart(); d.fx = d.x; d.fy = d.y; })
+    .on('drag',  (e, d) => { d.fx = e.x; d.fy = e.y; })
+    .on('end',   (e, d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; }));
+
+  // ── tooltip + navigation ──────────────────────────────────────────────
+  starSel
+    .on('mousemove', (e, d) => {
+      tooltip.style.display = 'block';
+      tooltip.innerHTML =
+        `<b>${escHtml(d.ip)}</b>` +
+        `<div class="tt-row"><span>Risk</span><span>${d.risk}</span></div>` +
+        `<div class="tt-row"><span>Severity</span><span>${escHtml(d.severity)}</span></div>` +
+        (d.product ? `<div class="tt-row"><span>Product</span><span>${escHtml(d.product)}</span></div>` : '') +
+        `<div class="tt-row"><span>Ports</span><span>${(d.ports || []).join(', ')}</span></div>` +
+        (d.cves ? `<div class="tt-row"><span>CVEs</span><span>${d.cves}</span></div>` : '') +
+        (d.kev ? `<div class="tt-row"><span style="color:var(--danger)">In CISA KEV</span><span>yes</span></div>` : '') +
+        (d.cloud ? `<div class="tt-row"><span>Cloud</span><span>${escHtml(d.cloud)}</span></div>` : '');
+      const r = wrap.getBoundingClientRect();
+      let x = e.clientX - r.left + 14, y = e.clientY - r.top + 14;
+      if (x + 200 > r.width) x -= 220;
+      if (y + 150 > r.height) y -= 160;
+      tooltip.style.left = x + 'px';
+      tooltip.style.top = y + 'px';
+    })
+    .on('mouseleave', () => { tooltip.style.display = 'none'; })
+    .on('click', (e, d) => { window.location.href = '/host/' + encodeURIComponent(d.ip); });
+
+  // ── edge-type toggles ─────────────────────────────────────────────────
+  document.querySelectorAll('[data-edge]').forEach(cb => {
+    cb.addEventListener('change', () => {
+      const off = new Set([...document.querySelectorAll('[data-edge]')]
+        .filter(c => !c.checked).map(c => c.dataset.edge));
+      const hide = d => off.has(d.reason) ? 'none' : null;
+      linkSel.attr('display', hide);
+      haloSel.attr('display', hide);
+    });
+  });
+
+  // ── risk filter ───────────────────────────────────────────────────────
+  const slider = document.getElementById('riskFilter');
+  const sliderVal = document.getElementById('riskFilterVal');
+  slider.addEventListener('input', () => {
+    const min = +slider.value;
+    sliderVal.textContent = min;
+    const hidden = new Set(nodes.filter(n => n.risk < min).map(n => n.id));
+    starSel.attr('display', d => hidden.has(d.id) ? 'none' : null);
+    const hideEdge = d =>
+      hidden.has(d.source.id || d.source) || hidden.has(d.target.id || d.target) ? 'none' : null;
+    linkSel.attr('display', hideEdge);
+    haloSel.attr('display', hideEdge);
+  });
+
+  // ── keep the canvas sized ─────────────────────────────────────────────
+  const ro = new ResizeObserver(() => {
+    width = wrap.clientWidth; height = wrap.clientHeight;
+    sim.force('center', d3.forceCenter(width / 2, height / 2));
+    sim.alpha(.25).restart();
+  });
+  ro.observe(wrap);
+})();
+</script>
+{% endblock %}

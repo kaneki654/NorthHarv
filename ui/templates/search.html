@@ -1,0 +1,354 @@
+{% extends "base.html" %}
+{% block title %}Search{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="page-title">
+    <span class="pt-icon"><svg class="icon"><use href="#i-search"/></svg></span>
+    Search
+  </div>
+  <div class="page-sub">Field operators across hosts, banners, certificates, technologies and CVE matches.</div>
+</div>
+
+<!-- ══════════════════ Query bar ══════════════════ -->
+<div class="search-hero" data-reveal>
+  <form class="search-wrap" action="/search" method="get" id="searchForm">
+    <input class="search-input" type="text" name="q" id="searchInput"
+           value="{{ query }}"
+           placeholder="port:443   tech:WordPress   risk:800   kev:true   country:US"
+           autocomplete="off" spellcheck="false" aria-label="Search query">
+    <button type="submit" class="btn btn-primary">
+      <svg class="icon"><use href="#i-search"/></svg> Search
+    </button>
+    <a href="/api/export?q={{ query }}&fmt=json" class="btn btn-ghost" title="Export results as JSON" download>
+      <svg class="icon"><use href="#i-download"/></svg> JSON
+    </a>
+    <a href="/api/export?q={{ query }}&fmt=csv" class="btn btn-ghost" title="Export results as CSV" download>
+      <svg class="icon"><use href="#i-download"/></svg> CSV
+    </a>
+  </form>
+
+  <div class="search-examples mt-2">
+    <span class="text-xs text-dim">Quick</span>
+    <span class="search-chip" onclick="setSearch('kev:true')">kev:true</span>
+    <span class="search-chip" onclick="setSearch('risk:800')">risk:800</span>
+    <span class="search-chip" onclick="setSearch('tech:WordPress')">tech:WordPress</span>
+    <span class="search-chip" onclick="setSearch('cloud:AWS')">cloud:AWS</span>
+    <span class="search-chip" onclick="setSearch('has:tls')">has:tls</span>
+    <span class="search-chip" onclick="setSearch('ssl.expired:true')">ssl.expired:true</span>
+    <span class="search-chip" onclick="setSearch('port.count:3')">port.count:3</span>
+    <span class="search-chip" onclick="setSearch('tag:ics')">tag:ics</span>
+  </div>
+
+  <details class="syntax mt-3" id="syntaxPanel">
+    <summary>
+      <svg class="icon"><use href="#i-info"/></svg>
+      Search syntax — every operator
+      <span class="text-xs text-dim" style="margin-left:auto">click any example to use it</span>
+    </summary>
+    <div class="syntax-grid" id="syntaxGrid"></div>
+  </details>
+</div>
+
+<!-- ══════════════════ Facets + results ══════════════════ -->
+<div class="search-layout">
+  <aside>
+    <div class="card" id="facetPanel" data-reveal>
+      <div class="card-title"><span class="ct-icon"><svg class="icon"><use href="#i-layers"/></svg></span> Facets</div>
+      <div id="facetList">
+        <div class="text-dim text-xs flex items-center gap-2"><span class="spinner"></span> Loading…</div>
+      </div>
+    </div>
+  </aside>
+
+  <div>
+    <div class="result-toolbar">
+      <span id="resultCount" class="text-sm text-muted flex items-center gap-2">
+        <span class="spinner"></span> Searching…
+      </span>
+      <div class="flex gap-2">
+        <select id="sortMode" class="form-select" aria-label="Sort order"
+                style="width:auto;font-family:var(--font-sans);font-size:.76rem;padding:.26rem 1.6rem .26rem .5rem">
+          <option value="risk">Sort: Risk ↓</option>
+          <option value="cvss">CVSS ↓</option>
+          <option value="epss">EPSS ↓</option>
+          <option value="new">Last seen ↓</option>
+          <option value="ip">IP ascending</option>
+        </select>
+        <select id="pageSize" class="form-select" aria-label="Results per page"
+                style="width:auto;font-family:var(--font-sans);font-size:.76rem;padding:.26rem 1.6rem .26rem .5rem">
+          <option value="50">50 / page</option>
+          <option value="100">100 / page</option>
+          <option value="200">200 / page</option>
+        </select>
+      </div>
+    </div>
+
+    <div id="resultList" class="result-list">
+      <div class="skeleton skeleton-text" style="height:52px"></div>
+      <div class="skeleton skeleton-text" style="height:52px"></div>
+      <div class="skeleton skeleton-text" style="height:52px"></div>
+      <div class="skeleton skeleton-text" style="height:52px"></div>
+      <div class="skeleton skeleton-text" style="height:52px"></div>
+    </div>
+
+    <div id="paginator" class="flex gap-2 mt-3 items-center" style="flex-wrap:wrap"></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let currentPage  = 1;
+let currentQuery = {{ query | tojson }};
+let lastResults  = [];
+let lastCount    = 0;
+
+function icon(n) { return `<svg class="icon"><use href="#${n}"/></svg>`; }
+function escHtml(s) {
+  return (s == null ? '' : String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function attr(s) { return escHtml(s).replace(/"/g, '&quot;'); }
+
+function flag(cc) {
+  if (!cc || cc.length !== 2) return '';
+  const base = 0x1F1E6;
+  return String.fromCodePoint(...[...cc.toUpperCase()].map(c => base + c.charCodeAt(0) - 65));
+}
+
+function parseJson(v) {
+  if (v && typeof v === 'object') return v;
+  if (!v) return {};
+  try { return JSON.parse(v) || {}; } catch (e) { return {}; }
+}
+
+function setSearch(q) {
+  const el = document.getElementById('searchInput');
+  el.value = q;
+  runSearch(1);
+}
+
+function appendSearch(tok) {
+  const inp = document.getElementById('searchInput');
+  inp.value = (inp.value.trim() + ' ' + tok).trim();
+  inp.focus();
+}
+
+/* ── Syntax reference, built from the shared operator table ───────── */
+(function buildSyntax() {
+  const ops = window.NH_OPERATORS || [];
+  document.getElementById('syntaxGrid').innerHTML = ops.map(([op, ex, desc]) => `
+    <div class="syntax-row">
+      <code onclick="appendSearch('${attr(op + ex)}')">${escHtml(op + ex)}</code>
+      <span>${escHtml(desc)}</span>
+    </div>`).join('');
+})();
+
+/* ── Result rows ──────────────────────────────────────────────────── */
+function riskBadge(score) {
+  const s = score || 0;
+  const cls = s >= 800 ? 'badge-critical' : s >= 600 ? 'badge-high'
+            : s >= 350 ? 'badge-medium' : s >= 150 ? 'badge-low' : 'badge-none';
+  return `<span class="badge ${cls}" title="NorthHarv risk score">R ${s}</span>`;
+}
+
+function badges(h) {
+  const kev = h.kev_list?.length;
+  const sev = h.severity || 'NONE';
+  const cvss = h.cvss_max || 0;
+  const cls = { CRITICAL:'badge-critical', HIGH:'badge-high', MEDIUM:'badge-medium',
+                LOW:'badge-low', NONE:'badge-none' }[sev] || 'badge-none';
+  return [
+    riskBadge(h.risk_score),
+    kev ? `<span class="badge badge-kev" title="${attr((h.kev_list||[]).slice(0,4).join(', '))}">${icon('i-flame')} KEV${kev > 1 ? ' ' + kev : ''}</span>` : '',
+    sev !== 'NONE' ? `<span class="badge ${cls}">${sev}${cvss > 0 ? ' ' + cvss.toFixed(1) : ''}</span>` : '',
+    h.cves_list?.length ? `<span class="badge badge-info" title="Matched CVEs">${h.cves_list.length} CVE</span>` : '',
+  ].filter(Boolean).join('');
+}
+
+function subPills(h) {
+  const geo = parseJson(h.geo_json);
+  const tls = parseJson(h.tls_json);
+  const out = [];
+
+  if (geo.country_code) {
+    out.push(`<span class="geo-pill"><span class="flag">${flag(geo.country_code)}</span> ${escHtml(geo.country_code)}${geo.city ? ' · ' + escHtml(geo.city) : ''}</span>`);
+  }
+  if (geo.org) out.push(`<span class="geo-pill">${icon('i-server')} ${escHtml(String(geo.org).slice(0, 22))}</span>`);
+  if (h.cloud_provider) out.push(`<span class="geo-pill">${icon('i-layers')} ${escHtml(h.cloud_provider)}</span>`);
+  if (h.waf) out.push(`<span class="geo-pill">${icon('i-shield')} ${escHtml(h.waf)}</span>`);
+  if (tls.subject_cn) {
+    const expired = typeof tls.days_to_expiry === 'number' && tls.days_to_expiry < 0;
+    out.push(`<span class="geo-pill" title="TLS subject CN${expired ? ' — expired' : ''}">
+      ${icon('i-lock')} <span class="${expired ? 'cert-expired' : ''}">${escHtml(String(tls.subject_cn).slice(0, 24))}</span></span>`);
+  }
+  if (h.last_seen) out.push(`<span class="text-xs text-dim text-mono">${escHtml(String(h.last_seen).slice(0, 10))}</span>`);
+  return out.join('');
+}
+
+function renderRow(h) {
+  const kev = h.kev_list?.length;
+  const rowCls = kev ? 'is-kev' : 'sev-' + String(h.severity || 'none').toLowerCase();
+  const product = [h.product, h.version].filter(Boolean).join(' ');
+  const title = h.http_title || product || h.hostname || '';
+  const techs = parseJson(h.techs);
+  const techList = Array.isArray(techs) ? techs.slice(0, 3) : [];
+
+  return `
+    <a href="/host/${encodeURIComponent(h.ip)}" class="result-row ${rowCls}" data-reveal>
+      <span class="result-ip">${escHtml(h.ip)}</span>
+      <span class="result-port">${h.port}/${escHtml(h.protocol || 'tcp')}</span>
+      <span class="result-service">
+        <div>${escHtml(h.service_name || 'unknown')}</div>
+        <div class="text-xs text-dim text-ellipsis">${escHtml(product || '—')}</div>
+      </span>
+      <span class="result-meta">
+        <div class="title">${escHtml(String(title).slice(0, 80)) || '<span class="text-dim">no title</span>'}</div>
+        <div class="sub">
+          ${subPills(h)}
+          ${techList.map(t => `<span class="tech-chip">${escHtml(t)}</span>`).join('')}
+        </div>
+      </span>
+      <span class="result-badges">${badges(h)}</span>
+    </a>`;
+}
+
+/* ── Facets ───────────────────────────────────────────────────────── */
+const FACET_LABELS = {
+  country: 'Country', product: 'Product', port: 'Port', org: 'Organisation',
+  service: 'Service', cloud: 'Cloud', severity: 'Severity', waf: 'WAF', tag: 'Tag',
+};
+
+function renderFacets(facets) {
+  const list = document.getElementById('facetList');
+  if (!facets) { list.innerHTML = '<div class="text-dim text-xs">No facets available</div>'; return; }
+
+  let html = '';
+  for (const [field, items] of Object.entries(facets)) {
+    if (!items?.length) continue;
+    html += `<div class="facet-group"><div class="facet-head">${escHtml(FACET_LABELS[field] || field)}</div>`;
+    for (const [val, cnt] of items.slice(0, 8)) {
+      const q2 = `${currentQuery} ${field}:${val}`.trim();
+      const show = field === 'country' ? `${flag(val)} ${escHtml(val)}`
+                 : field === 'tag' ? escHtml(String(val).split(',')[0])
+                 : escHtml(val);
+      html += `<div class="facet-row" onclick="setSearch(${attr(JSON.stringify(q2))})"
+                    title="Add ${escHtml(field)}:${escHtml(val)} to the query">
+        <span class="facet-val">${show}</span>
+        <span class="facet-cnt">${cnt}</span>
+      </div>`;
+    }
+    html += '</div>';
+  }
+  list.innerHTML = html || '<div class="text-dim text-xs">No facets available</div>';
+}
+
+/* ── Sort + paint ─────────────────────────────────────────────────── */
+function sortRows(rows) {
+  const mode = document.getElementById('sortMode').value;
+  const out = rows.slice();
+  if (mode === 'risk') out.sort((a, b) => (b.risk_score || 0) - (a.risk_score || 0));
+  else if (mode === 'cvss') out.sort((a, b) => (b.cvss_max || 0) - (a.cvss_max || 0));
+  else if (mode === 'epss') out.sort((a, b) => (b.epss_max || 0) - (a.epss_max || 0));
+  else if (mode === 'new') out.sort((a, b) => String(b.last_seen || '').localeCompare(String(a.last_seen || '')));
+  else if (mode === 'ip') {
+    const key = ip => String(ip || '').split('.').map(n => String(n).padStart(3, '0')).join('');
+    out.sort((a, b) => key(a.ip).localeCompare(key(b.ip)) || (a.port - b.port));
+  }
+  return out;
+}
+
+function paint() {
+  const rl = document.getElementById('resultList');
+  rl.innerHTML = lastResults.length
+    ? sortRows(lastResults).map(renderRow).join('')
+    : `<div class="empty-state"><div class="empty-icon">${icon('i-scope')}</div>
+         <h3>No results</h3><p>Try different operators, or <a href="/explore">browse the explore page</a>.</p></div>`;
+}
+
+/* ── Search ───────────────────────────────────────────────────────── */
+async function runSearch(page = 1) {
+  currentPage = page;
+  const q = document.getElementById('searchInput').value.trim();
+  currentQuery = q;
+  const limit = parseInt(document.getElementById('pageSize').value, 10) || 50;
+
+  document.getElementById('resultCount').innerHTML = '<span class="spinner"></span> Searching…';
+
+  const facetFields = 'country,product,port,org,service,cloud,severity,waf';
+  const [data, totalRes] = await Promise.all([
+    fetch(`/api/search?q=${encodeURIComponent(q)}&limit=${limit}&page=${page}&facets=${facetFields}`)
+      .then(r => r.json()).catch(() => null),
+    fetch(`/api/search/count?q=${encodeURIComponent(q)}`).then(r => r.json()).catch(() => null),
+  ]);
+
+  if (!data) {
+    document.getElementById('resultList').innerHTML =
+      `<div class="empty-state"><div class="empty-icon">${icon('i-alert')}</div>
+         <h3>Search failed</h3><p>The API did not respond.</p></div>`;
+    document.getElementById('resultCount').textContent = '—';
+    return;
+  }
+
+  if (data.detail) {
+    lastResults = [];
+    document.getElementById('resultList').innerHTML =
+      `<div class="empty-state"><div class="empty-icon">${icon('i-alert')}</div>
+         <h3>Query not understood</h3>
+         <p class="text-mono text-xs">${escHtml(data.detail)}</p>
+         <p>Open <strong>Search syntax</strong> above for the full operator list.</p></div>`;
+    document.getElementById('resultCount').innerHTML =
+      `<span class="badge badge-medium">${icon('i-alert')} invalid query</span>`;
+    document.getElementById('paginator').innerHTML = '';
+    document.getElementById('facetList').innerHTML =
+      '<div class="text-dim text-xs">No facets — fix the query first.</div>';
+    return;
+  }
+
+  lastResults = data.results || [];
+  lastCount = (totalRes && typeof totalRes.count === 'number') ? totalRes.count : lastResults.length;
+
+  const from = lastResults.length ? (page - 1) * limit + 1 : 0;
+  const to = (page - 1) * limit + lastResults.length;
+  const kevCount = lastResults.filter(h => h.kev_list?.length).length;
+  const critCount = lastResults.filter(h => (h.risk_score || 0) >= 800).length;
+
+  document.getElementById('resultCount').innerHTML = [
+    lastResults.length
+      ? `Showing <strong class="text-mono">${from.toLocaleString()}–${to.toLocaleString()}</strong>
+         of <strong class="text-primary text-mono">${lastCount.toLocaleString()}</strong> results`
+      : `<strong class="text-mono">0</strong> results`,
+    `for <span class="text-mono text-dim">${escHtml(q || '*')}</span>`,
+    kevCount ? `<span class="badge badge-kev">${icon('i-flame')} ${kevCount} KEV</span>` : '',
+    critCount ? `<span class="badge badge-critical">${critCount} critical risk</span>` : '',
+  ].filter(Boolean).join(' ');
+
+  paint();
+  renderFacets(data.facets);
+
+  /* pagination with page numbers */
+  const pages = Math.max(1, Math.ceil(lastCount / limit));
+  const buttons = [];
+  if (page > 1) buttons.push(`<button class="btn btn-ghost btn-sm" onclick="runSearch(${page - 1})">${icon('i-chev-left')} Prev</button>`);
+  const start = Math.max(1, Math.min(page - 2, pages - 4));
+  for (let p = start; p <= Math.min(pages, start + 4); p++) {
+    buttons.push(`<button class="btn ${p === page ? 'btn-primary' : 'btn-ghost'} btn-sm text-mono"
+                    onclick="runSearch(${p})">${p}</button>`);
+  }
+  if (page < pages) buttons.push(`<button class="btn btn-ghost btn-sm" onclick="runSearch(${page + 1})">Next ${icon('i-chev-right')}</button>`);
+  if (pages > 1) buttons.push(`<span class="text-xs text-dim" style="margin-left:.4rem">${pages} pages</span>`);
+  document.getElementById('paginator').innerHTML = buttons.join('');
+
+  /* keep the exports pointed at the current query */
+  document.querySelectorAll('a[href^="/api/export"]').forEach(a => {
+    const fmt = a.href.includes('csv') ? 'csv' : 'json';
+    a.href = `/api/export?q=${encodeURIComponent(q)}&fmt=${fmt}`;
+  });
+}
+
+runSearch(1);
+document.getElementById('pageSize').addEventListener('change', () => runSearch(1));
+document.getElementById('sortMode').addEventListener('change', paint);
+document.getElementById('searchForm').addEventListener('submit', e => { e.preventDefault(); runSearch(1); });
+</script>
+{% endblock %}

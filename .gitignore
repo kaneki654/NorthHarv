@@ -1,0 +1,21 @@
+# Runtime database: regenerated on first run, and once you scan it holds
+# results about the networks you scanned. Never commit it.
+cyberscan.db
+*.db-wal
+*.db-shm
+*.db-journal
+
+# Downloaded feeds and caches, all rebuilt automatically
+nvd_cache/
+wordlists_cache/
+engine/cache/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Editor and OS clutter
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block title %}Explore{% endblock %}
+
+{% block content %}
+<section class="hero" data-reveal>
+  <div class="hero-grid" aria-hidden="true"></div>
+  <div class="hero-scan" aria-hidden="true"></div>
+  <div class="hero-glow" aria-hidden="true"></div>
+
+  <div class="hero-inner">
+    <span class="hero-eyebrow"><span class="live-dot" aria-hidden="true"></span> Curated views</span>
+    <h1 class="hero-title">Explore the <b>network</b>.</h1>
+    <p class="hero-sub">
+      Every tile is a live query against your own index — no sampling, no result caps,
+      no paywall. Click one to open it in search.
+    </p>
+
+    <div class="hero-kpis" id="exploreKpis">
+      <div class="hero-kpi"><span class="hero-kpi-label">Hosts</span><span class="hero-kpi-value"><span class="spinner"></span></span></div>
+      <div class="hero-kpi"><span class="hero-kpi-label">Open ports</span><span class="hero-kpi-value"><span class="spinner"></span></span></div>
+      <div class="hero-kpi"><span class="hero-kpi-label">KEV exposure</span><span class="hero-kpi-value"><span class="spinner"></span></span></div>
+      <div class="hero-kpi"><span class="hero-kpi-label">Critical risk</span><span class="hero-kpi-value"><span class="spinner"></span></span></div>
+    </div>
+  </div>
+</section>
+
+<div class="card-title" style="margin-bottom:.7rem">
+  <span class="ct-icon"><svg class="icon"><use href="#i-layers"/></svg></span>
+  Featured categories
+</div>
+
+<div class="explore-grid mb-4" id="exploreGrid">
+  <div class="skeleton" style="height:140px;border-radius:var(--radius-lg)"></div>
+  <div class="skeleton" style="height:140px;border-radius:var(--radius-lg)"></div>
+  <div class="skeleton" style="height:140px;border-radius:var(--radius-lg)"></div>
+  <div class="skeleton" style="height:140px;border-radius:var(--radius-lg)"></div>
+  <div class="skeleton" style="height:140px;border-radius:var(--radius-lg)"></div>
+  <div class="skeleton" style="height:140px;border-radius:var(--radius-lg)"></div>
+</div>
+
+<div class="card" data-reveal>
+  <div class="card-title">
+    <span class="ct-icon"><svg class="icon"><use href="#i-sparkles"/></svg></span>
+    Featured queries
+  </div>
+  <div class="featured-list" id="featuredList">
+    <div class="skeleton skeleton-text" style="height:36px"></div>
+    <div class="skeleton skeleton-text" style="height:36px"></div>
+    <div class="skeleton skeleton-text" style="height:36px"></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function icon(n) { return `<svg class="icon"><use href="#${n}"/></svg>`; }
+function escHtml(s) {
+  return (s == null ? '' : String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function num(n) { return (n || 0).toLocaleString(); }
+
+async function loadExplore() {
+  const d = await fetch('/api/explore').then(r => r.json()).catch(() => null);
+  if (!d) {
+    document.getElementById('exploreGrid').innerHTML =
+      `<div class="empty-state" style="grid-column:1/-1"><div class="empty-icon">${icon('i-alert')}</div>
+         <h3>Could not load categories</h3></div>`;
+    return;
+  }
+
+  const t = d.totals || {};
+  document.getElementById('exploreKpis').innerHTML = `
+    <div class="hero-kpi"><span class="hero-kpi-label">Hosts</span>
+      <span class="hero-kpi-value">${num(t.ips)}</span></div>
+    <div class="hero-kpi"><span class="hero-kpi-label">Open ports</span>
+      <span class="hero-kpi-value">${num(t.ports)}</span></div>
+    <div class="hero-kpi"><span class="hero-kpi-label">KEV exposure</span>
+      <span class="hero-kpi-value ${t.kev ? 'hot' : ''}">${num(t.kev)}</span></div>
+    <div class="hero-kpi"><span class="hero-kpi-label">Critical risk</span>
+      <span class="hero-kpi-value ${t.critical ? 'hot' : ''}">${num(t.critical)}</span></div>`;
+
+  document.getElementById('exploreGrid').innerHTML = (d.categories || []).map(c => `
+    <a class="explore-card" data-reveal href="/search?q=${encodeURIComponent(c.query)}">
+      <div class="explore-head">
+        <span class="explore-icon">${icon(c.icon || 'i-scope')}</span>
+        <span class="explore-title">${escHtml(c.title)}</span>
+        <span class="explore-count ${c.count ? '' : 'zero'}" data-count="${c.count || 0}">0</span>
+      </div>
+      <div class="explore-desc">${escHtml(c.desc)}</div>
+      <div class="explore-query">${escHtml(c.query)}</div>
+    </a>`).join('');
+
+  document.getElementById('featuredList').innerHTML = (d.featured || []).map(f => `
+    <a class="featured-item" href="/search?q=${encodeURIComponent(f.query)}">
+      ${icon('i-search')}
+      <span>
+        <div>${escHtml(f.label)}</div>
+        <div class="fi-q">${escHtml(f.query)}</div>
+      </span>
+      <span class="fi-n">${num(f.count)}</span>
+    </a>`).join('');
+}
+
+loadExplore();
+</script>
+{% endblock %}
