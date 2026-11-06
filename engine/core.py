@@ -24,6 +24,15 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+try:
+    from engine.card_detector import scan_banner as _cd_scan_banner, CardFinding as _CardFinding
+except ImportError:
+    try:
+        from card_detector import scan_banner as _cd_scan_banner, CardFinding as _CardFinding
+    except ImportError:
+        _cd_scan_banner = None  # type: ignore
+        _CardFinding = None     # type: ignore
+
 # ============================================================================
 # CONFIG
 # ============================================================================
@@ -1019,7 +1028,45 @@ def store_service(svc: Service):
         "INSERT INTO observations (ip, port, scan_round, seen_at, record_json)"
         " VALUES (?,?,?,?,?)",
         (svc.ip, svc.port, svc.scan_round, now, svc.to_json()))
+    # Sync auto-tags into host_tags (delete stale, insert current)
+    if svc.tags is not None:
+        conn.execute("DELETE FROM host_tags WHERE ip=? AND port=?", (svc.ip, svc.port))
+        for tag in [t for t in svc.tags.split(",") if t]:
+            conn.execute(
+                "INSERT OR IGNORE INTO host_tags (ip, port, tag) VALUES (?,?,?)",
+                (svc.ip, svc.port, tag))
     conn.commit(); conn.close()
+
+
+def store_pci_findings(svc, findings: list) -> int:
+    """
+    Persist CardFinding list for a host into pci_findings.
+    Uses INSERT OR IGNORE so duplicate (ip, port, masked_pan) rows are silently skipped.
+    Returns the number of new rows inserted.
+    """
+    if not findings:
+        return 0
+    now = datetime.now(timezone.utc).isoformat()
+    conn = db()
+    inserted = 0
+    try:
+        for f in findings:
+            cur = conn.execute(
+                """INSERT OR IGNORE INTO pci_findings
+                   (ip, port, service_name, detected_at, card_network, luhn_valid,
+                    masked_pan, bin_prefix, issuer, country, funding_type)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (svc.ip, svc.port, svc.service_name or "", now,
+                 f.card_network, int(f.luhn_valid), f.masked_pan,
+                 f.bin_prefix, f.issuer, f.country, f.funding_type))
+            inserted += cur.rowcount
+        conn.commit()
+    except sqlite3.Error as exc:
+        log.warning("store_pci_findings %s:%s — %s", svc.ip, svc.port, exc)
+    finally:
+        conn.close()
+    return inserted
+
 
 # ============================================================================
 # SCANNER
@@ -1129,6 +1176,9 @@ async def enrich_and_store(ip: str, port: int, round_id: int):
     svc.waf = detect_waf(headers_str, svc.banner)
     svc.cloud_provider = detect_cloud(
         ip, (svc.geo.org if svc.geo else ""), svc.banner)
+    svc.tags = compute_auto_tags(
+        port, svc.service_name, svc.product,
+        svc.banner, svc.http_title, headers_str)
 
     if port in (22, 2222):
         _ssh_banner, kex = await asyncio.to_thread(grab_ssh_kex, ip, port)
@@ -1141,6 +1191,17 @@ async def enrich_and_store(ip: str, port: int, round_id: int):
             fetch_icon_hash, f"{scheme}://{ip}:{port}")
 
     await asyncio.to_thread(store_service, svc)
+
+    # PCI banner scan — offline, zero-latency, never retains full PANs
+    if _cd_scan_banner is not None and svc.banner:
+        try:
+            _findings = _cd_scan_banner(svc.banner)
+            if _findings:
+                await asyncio.to_thread(store_pci_findings, svc, _findings)
+                log.info("pci: %s:%s — %d candidate(s) stored", svc.ip, svc.port, len(_findings))
+        except Exception as _exc:
+            log.debug("pci scan error %s:%s — %s", svc.ip, svc.port, _exc)
+
     return svc
 
 async def scan_cycle(cidr, ports, nets, expand_dns: bool = True) -> int:
@@ -2152,6 +2213,165 @@ from engine import signatures as SIG
 
 # ── Schema migrations ───────────────────────────────────────────────────────
 # column name -> DDL type/default. Applied additively; existing data is kept.
+# ── Auto-tag detection ──────────────────────────────────────────────────────
+_CAMERA_PORTS = frozenset({554, 8554, 10554, 8181, 34567, 37777})
+
+_CAMERA_KEYWORDS = frozenset({
+    "hikvision", "dahua", "axis communications", "vivotek", "foscam",
+    "amcrest", "reolink", "ubiquiti", "hanwha", "bosch security", "pelco",
+    "uniview", "milesight", "tiandy", "geovision", "mobotix", "avigilon",
+    "flir", "arecont", "vstarcam", "lorex", "annke", "zosi",
+    "ip camera", "ipcamera", "net camera", "netcam", "webcam", "webeye",
+    "netwave ip", "nvr", "dvr", "cctv", "video surveillance",
+    "surveillance camera", "security camera", "onvif", "rtsp/",
+    "stream.mjpeg", "/videostream", "/video.cgi", "/snapshot.cgi",
+    "mjpeg", "mjpg-streamer",
+})
+
+_LOGIN_TITLE_WORDS = frozenset({
+    "login", "log in", "sign in", "signin", "logon", "log-in",
+    "authentication", "authenticate", "user login", "admin login",
+    "please login", "please log in", "please sign in",
+})
+
+_ADMIN_KEYWORDS = frozenset({
+    "phpmyadmin", "webmin", "cpanel", "plesk", "directadmin",
+    "admin panel", "admin console", "control panel", "management console",
+    "web manager", "router admin", "router login", "modem login",
+    "switch admin", "firewall admin", "dashboard — admin",
+    "admin — dashboard", "admin dashboard", "management interface",
+    "device manager", "system management",
+})
+
+_DEFAULT_CRED_KEYWORDS = frozenset({
+    "default password", "default credentials", "factory password",
+    "admin/admin", "admin:admin", "default username", "password: admin",
+})
+
+_EXPOSED_DB_SERVICES = frozenset({
+    "redis", "memcached", "mongodb", "elasticsearch", "cassandra",
+    "couchdb", "influxdb", "clickhouse",
+    # relational / common DBs that also appear unauthenticated on public internet
+    "mysql", "postgresql", "mssql", "ms-sql-s", "mariadb", "neo4j",
+    "oracle", "db2",
+})
+
+
+def compute_auto_tags(port: int, service_name: str, product: str,
+                      banner: str, http_title: str, http_headers: str) -> str:
+    """Detect camera, RTSP, ONVIF, login panels, admin interfaces, exposed DBs.
+
+    Returns comma-separated sorted tag string stored in hosts.tags.
+    """
+    tags: set[str] = set()
+    sn    = (service_name or "").lower()
+    prod  = (product or "").lower()
+    ban   = (banner or "")[:2000].lower()
+    title = (http_title or "").lower()
+    hdrs  = (http_headers or "")[:1000].lower()
+    full  = f"{prod} {ban} {title} {hdrs}"
+
+    # ── RTSP / camera ──────────────────────────────────────────────────────
+    if port in _CAMERA_PORTS or sn == "rtsp" or "rtsp/" in ban:
+        tags.add("rtsp")
+    if "onvif" in full:
+        tags.add("onvif")
+    if any(kw in full for kw in _CAMERA_KEYWORDS):
+        tags.add("camera")
+    if "rtsp" in tags or "onvif" in tags:
+        tags.add("camera")
+
+    # ── Open directory listing ─────────────────────────────────────────────
+    if "index of /" in title or "directory listing" in title or "parent directory" in ban:
+        tags.add("open_dir")
+
+    # ── Login panel ────────────────────────────────────────────────────────
+    if any(w in title for w in _LOGIN_TITLE_WORDS):
+        tags.add("login_panel")
+
+    # ── Admin / management panel ───────────────────────────────────────────
+    if any(kw in full for kw in _ADMIN_KEYWORDS):
+        tags.add("admin_panel")
+
+    # ── Default credentials page ───────────────────────────────────────────
+    if any(kw in full for kw in _DEFAULT_CRED_KEYWORDS):
+        tags.add("default_creds")
+
+    # ── Exposed database / infra with no auth ─────────────────────────────
+    if sn in _EXPOSED_DB_SERVICES:
+        tags.add("exposed_db")
+    if sn == "docker":
+        tags.add("exposed_docker")
+    if sn in ("kubernetes-api", "kubernetes"):
+        tags.add("exposed_k8s")
+
+    return ",".join(sorted(tags))
+
+
+def backfill_tags() -> dict:
+    """Re-compute and persist tags for every host that currently has tags=''.
+
+    Safe to call at startup; uses a single transaction per 500-row batch.
+    Returns diagnostic counts.
+    """
+    conn = db()
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT ip, port, service_name, product, banner, http_title, http_headers "
+        "FROM hosts WHERE tags = '' OR tags IS NULL"
+    ).fetchall()
+    total = len(rows)
+    updated = 0
+    per_tag: dict[str, int] = {}
+    try:
+        batch: list[tuple] = []
+        for r in rows:
+            new_tags = compute_auto_tags(
+                r["port"],
+                r["service_name"] or "",
+                r["product"] or "",
+                r["banner"] or "",
+                r["http_title"] or "",
+                r["http_headers"] or "",
+            )
+            if not new_tags:
+                continue
+            batch.append((new_tags, r["ip"], r["port"]))
+            for t in new_tags.split(","):
+                per_tag[t] = per_tag.get(t, 0) + 1
+            if len(batch) >= 500:
+                conn.executemany(
+                    "UPDATE hosts SET tags=? WHERE ip=? AND port=?", batch)
+                updated += len(batch)
+                batch = []
+        if batch:
+            conn.executemany(
+                "UPDATE hosts SET tags=? WHERE ip=? AND port=?", batch)
+            updated += len(batch)
+        # Rebuild host_tags for all rows that now have tags
+        if updated:
+            for row in conn.execute(
+                    "SELECT tags, ip, port FROM hosts WHERE tags != '' AND tags IS NOT NULL"
+            ).fetchall():
+                row_tags = row[0]; ip = row[1]; port = row[2]
+                conn.execute(
+                    "DELETE FROM host_tags WHERE ip=? AND port=?", (ip, port))
+                for tag in row_tags.split(","):
+                    if tag:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO host_tags (ip, port, tag) VALUES (?,?,?)",
+                            (ip, port, tag))
+        conn.commit()
+    except Exception as exc:
+        log.warning("backfill_tags: %s", exc)
+    finally:
+        conn.close()
+    log.info(
+        "backfill_tags: inspected=%d updated=%d per_tag=%s",
+        total, updated, per_tag)
+    return {"inspected": total, "updated": updated, "per_tag": per_tag}
+
+
 HOST_MIGRATIONS = {
     "risk_score":     "INTEGER DEFAULT 0",
     "techs":          "TEXT DEFAULT ''",
@@ -2226,6 +2446,25 @@ CREATE INDEX IF NOT EXISTS idx_hosts_risk   ON hosts(risk_score);
 CREATE INDEX IF NOT EXISTS idx_hosts_ip     ON hosts(ip);
 CREATE INDEX IF NOT EXISTS idx_hosts_domain ON hosts(domain);
 CREATE INDEX IF NOT EXISTS idx_hostnames_nm ON hostnames(hostname);
+-- PCI/payment-card findings: masked PANs only, never plaintext card numbers.
+CREATE TABLE IF NOT EXISTS pci_findings (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    ip           TEXT    NOT NULL,
+    port         INTEGER NOT NULL,
+    service_name TEXT    DEFAULT '',
+    detected_at  TEXT    NOT NULL,
+    card_network TEXT    DEFAULT '',
+    luhn_valid   INTEGER DEFAULT 0,
+    masked_pan   TEXT    NOT NULL,
+    bin_prefix   TEXT    DEFAULT '',
+    issuer       TEXT    DEFAULT '',
+    country      TEXT    DEFAULT '',
+    funding_type TEXT    DEFAULT '',
+    UNIQUE (ip, port, masked_pan)
+);
+CREATE INDEX IF NOT EXISTS idx_pci_ip      ON pci_findings(ip);
+CREATE INDEX IF NOT EXISTS idx_pci_net     ON pci_findings(card_network);
+CREATE INDEX IF NOT EXISTS idx_pci_ts      ON pci_findings(detected_at);
 """
 
 

@@ -113,6 +113,8 @@ async def _startup():
     engine.CVE = engine.CveDB()
     _ensure_annotations_table()
     _auto_start_crawl()
+    # Backfill tags for existing hosts that were stored before tag detection ran
+    asyncio.ensure_future(asyncio.to_thread(engine.backfill_tags))
 
 
 def _ensure_annotations_table():
@@ -1344,6 +1346,7 @@ async def _run_crawl(ports: list, name: str, resume: bool = False) -> None:
                 placeholders = ",".join("?" * len(ips))
                 new_rows = conn.execute(
                     "SELECT ip, port, service_name, product, version, cvss_max, cves, last_seen, "
+                    "tags, "
                     "json_extract(geo_json,'$.country_code') as country_code "
                     f"FROM hosts WHERE ip IN ({placeholders}) ORDER BY last_seen DESC",
                     ips,
@@ -1489,15 +1492,88 @@ async def api_crawl_stream(request: Request):
 
 
 # ── API: Discover ─────────────────────────────────────────────────────────────
-@app.get("/api/discover")
-async def api_discover(offset: int = Query(0, ge=0), limit: int = Query(500, le=2000)):
-    rows = _db_dict(
-        "SELECT ip, port, service_name, product, version, cvss_max, cves, last_seen, "
-        "json_extract(geo_json,'$.country_code') as country_code "
-        "FROM hosts ORDER BY last_seen DESC "
-        f"LIMIT {limit} OFFSET {offset}"
+@app.get("/api/discover/stats")
+async def api_discover_stats():
+    """Diagnostic counters: total hosts, per-tag counts, enrichment state."""
+    total = (_db_one("SELECT COUNT(*) AS n FROM hosts") or {}).get("n", 0)
+    tagged = (_db_one(
+        "SELECT COUNT(*) AS n FROM hosts WHERE tags != '' AND tags IS NOT NULL"
+    ) or {}).get("n", 0)
+    per_tag = _db_dict(
+        "SELECT tag, COUNT(*) AS n FROM host_tags GROUP BY tag ORDER BY n DESC"
     )
+    with_title = (_db_one(
+        "SELECT COUNT(*) AS n FROM hosts WHERE http_title != '' AND http_title IS NOT NULL"
+    ) or {}).get("n", 0)
+    with_banner = (_db_one(
+        "SELECT COUNT(*) AS n FROM hosts WHERE banner != '' AND banner IS NOT NULL"
+    ) or {}).get("n", 0)
+    return {
+        "total_hosts": total,
+        "tagged_hosts": tagged,
+        "hosts_with_title": with_title,
+        "hosts_with_banner": with_banner,
+        "per_tag": {r["tag"]: r["n"] for r in per_tag},
+    }
+
+
+@app.get("/api/discover")
+async def api_discover(
+    offset: int = Query(0, ge=0),
+    limit: int = Query(500, le=2000),
+    tag: str = Query(""),
+):
+    if tag:
+        rows = _db_dict(
+            "SELECT h.ip, h.port, h.service_name, h.product, h.version, "
+            "h.cvss_max, h.cves, h.last_seen, h.tags, "
+            "json_extract(h.geo_json,'$.country_code') as country_code "
+            "FROM hosts h "
+            "JOIN host_tags ht ON h.ip=ht.ip AND h.port=ht.port "
+            "WHERE ht.tag=? "
+            "ORDER BY h.last_seen DESC "
+            f"LIMIT {limit} OFFSET {offset}",
+            (tag,),
+        )
+    else:
+        rows = _db_dict(
+            "SELECT ip, port, service_name, product, version, cvss_max, cves, last_seen, "
+            "tags, "
+            "json_extract(geo_json,'$.country_code') as country_code "
+            "FROM hosts ORDER BY last_seen DESC "
+            f"LIMIT {limit} OFFSET {offset}"
+        )
     return {"hosts": rows, "offset": offset, "count": len(rows)}
+
+
+@app.get("/api/pci/findings")
+async def api_pci_findings(
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, le=500),
+    network: str = Query(""),
+    luhn: str = Query(""),   # "valid" | "invalid" | ""
+):
+    wheres, params = [], []
+    if network:
+        wheres.append("lower(card_network) = lower(?)")
+        params.append(network)
+    if luhn == "valid":
+        wheres.append("luhn_valid = 1")
+    elif luhn == "invalid":
+        wheres.append("luhn_valid = 0")
+    where_sql = ("WHERE " + " AND ".join(wheres)) if wheres else ""
+    rows = _db_dict(
+        f"SELECT id, ip, port, service_name, detected_at, card_network, "
+        f"luhn_valid, masked_pan, bin_prefix, issuer, country, funding_type "
+        f"FROM pci_findings {where_sql} "
+        f"ORDER BY detected_at DESC LIMIT ? OFFSET ?",
+        tuple(params) + (limit, offset),
+    )
+    count_row = _db_one(
+        f"SELECT COUNT(*) AS n FROM pci_findings {where_sql}", tuple(params)
+    )
+    total = (count_row or {}).get("n", 0)
+    return {"findings": rows, "total": total, "offset": offset, "limit": limit}
 
 
 @app.get("/api/discover/feed")
@@ -1566,6 +1642,16 @@ async def ui_discover(request: Request):
 @app.get("/feeds")
 async def ui_feeds(request: Request):
     return _resp(request, "feeds.html")
+
+
+@app.get("/pci")
+async def ui_pci(request: Request):
+    return _resp(request, "pci.html")
+
+
+@app.get("/export")
+async def ui_export(request: Request):
+    return _resp(request, "export.html")
 
 
 @app.get("/wordlists")

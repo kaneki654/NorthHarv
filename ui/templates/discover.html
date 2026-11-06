@@ -29,10 +29,10 @@
 </div>
 
 <!-- ── Filter bar ───────────────────────────────────────────────────────── -->
-<div class="flex gap-2 mb-4 items-center" style="flex-wrap:wrap" id="filterBar">
+<div class="flex gap-2 mb-3 items-center" style="flex-wrap:wrap">
   <input class="form-input" id="filterSearch" placeholder="Filter: IP, product, country, service…"
     style="max-width:280px" oninput="applyFilters()">
-  <select class="form-input" id="filterRisk" style="max-width:160px" onchange="applyFilters()">
+  <select class="form-input" id="filterRisk" style="max-width:150px" onchange="applyFilters()">
     <option value="">Any risk</option>
     <option value="critical">Critical (9+)</option>
     <option value="high">High (7+)</option>
@@ -40,7 +40,7 @@
     <option value="low">Low</option>
     <option value="none">No CVEs</option>
   </select>
-  <select class="form-input" id="filterService" style="max-width:160px" onchange="applyFilters()">
+  <select class="form-input" id="filterService" style="max-width:140px" onchange="applyFilters()">
     <option value="">Any service</option>
     <option value="http">HTTP</option>
     <option value="https">HTTPS</option>
@@ -51,6 +51,27 @@
     <option value="telnet">Telnet</option>
   </select>
   <span class="text-xs text-dim" id="filterCount"></span>
+</div>
+<div class="flex gap-2 mb-4" style="flex-wrap:wrap">
+  <button class="tag-chip active" data-tag="" onclick="setTagFilter(this,'')"><svg class="icon"><use href="#i-layers"/></svg> All</button>
+  <button class="tag-chip" data-tag="camera" onclick="setTagFilter(this,'camera')"><svg class="icon"><use href="#i-camera"/></svg> Camera</button>
+  <button class="tag-chip" data-tag="rtsp" onclick="setTagFilter(this,'rtsp')"><svg class="icon"><use href="#i-radio"/></svg> RTSP</button>
+  <button class="tag-chip" data-tag="onvif" onclick="setTagFilter(this,'onvif')"><svg class="icon"><use href="#i-monitor"/></svg> ONVIF</button>
+  <button class="tag-chip" data-tag="login_panel" onclick="setTagFilter(this,'login_panel')"><svg class="icon"><use href="#i-lock"/></svg> Login Panel</button>
+  <button class="tag-chip" data-tag="admin_panel" onclick="setTagFilter(this,'admin_panel')"><svg class="icon"><use href="#i-shield"/></svg> Admin Panel</button>
+  <button class="tag-chip" data-tag="open_dir" onclick="setTagFilter(this,'open_dir')"><svg class="icon"><use href="#i-folder"/></svg> Open Dir</button>
+  <button class="tag-chip" data-tag="default_creds" onclick="setTagFilter(this,'default_creds')"><svg class="icon"><use href="#i-key"/></svg> Default Creds</button>
+  <button class="tag-chip" data-tag="exposed_db" onclick="setTagFilter(this,'exposed_db')"><svg class="icon"><use href="#i-database"/></svg> Exposed DB</button>
+  <button class="tag-chip" data-tag="exposed_docker" onclick="setTagFilter(this,'exposed_docker')"><svg class="icon"><use href="#i-server"/></svg> Docker API</button>
+</div>
+
+<!-- ── Diagnostic stats ──────────────────────────────────────────────────── -->
+<div id="discoverStats" style="display:none;margin-bottom:.75rem;padding:.5rem .85rem;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;font-size:.75rem;color:var(--fg-dim)">
+  <span id="dStatTotal"></span>
+  <span style="margin:0 .5rem">·</span>
+  <span id="dStatTagged"></span>
+  <span style="margin:0 .5rem">·</span>
+  <span id="dStatPerTag"></span>
 </div>
 
 <!-- ── Card grid ────────────────────────────────────────────────────────── -->
@@ -109,6 +130,25 @@
 .d-banner-dns     { background: #06b6d4; }
 .d-banner-db      { background: #d97706; }
 .d-banner-unknown { background: var(--fg-4); }
+/* Tag chips */
+.tag-chip {
+  padding: .25rem .65rem; border-radius: 20px; font-size: .72rem; cursor: pointer;
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--fg-2);
+  transition: background .12s, color .12s;
+}
+.tag-chip:hover { background: var(--surface-3); color: var(--fg-1); }
+.tag-chip.active { background: var(--primary); border-color: var(--primary); color: #fff; }
+/* Exposure tag badges on cards */
+.d-tag { font-size: .62rem; padding: .1rem .35rem; border-radius: 10px; white-space: nowrap; }
+.d-tag-camera  { background: rgba(16,185,129,.15); color: #10b981; border: 1px solid rgba(16,185,129,.3); }
+.d-tag-rtsp    { background: rgba(6,182,212,.15);  color: #06b6d4; border: 1px solid rgba(6,182,212,.3); }
+.d-tag-onvif   { background: rgba(6,182,212,.15);  color: #06b6d4; border: 1px solid rgba(6,182,212,.3); }
+.d-tag-login   { background: rgba(245,158,11,.15); color: #f59e0b; border: 1px solid rgba(245,158,11,.3); }
+.d-tag-admin   { background: rgba(239,68,68,.15);  color: #ef4444; border: 1px solid rgba(239,68,68,.3); }
+.d-tag-opendir { background: rgba(139,92,246,.15); color: #8b5cf6; border: 1px solid rgba(139,92,246,.3); }
+.d-tag-creds   { background: rgba(239,68,68,.2);   color: #ef4444; border: 1px solid rgba(239,68,68,.5); font-weight:700; }
+.d-tag-db      { background: rgba(217,119,6,.15);  color: #d97706; border: 1px solid rgba(217,119,6,.3); }
+.d-tag-docker  { background: rgba(59,130,246,.15); color: #3b82f6; border: 1px solid rgba(59,130,246,.3); }
 .live-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
 .live-dot-active  { background: var(--success); animation: pulse 1.6s infinite; }
 .live-dot-idle    { background: var(--fg-4); }
@@ -122,6 +162,7 @@
 let allCards = [];
 let page = 0;
 const PAGE_SIZE = 60;
+let activeTagFilter = '';
 
 function escHtml(s) {
   return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -176,6 +217,7 @@ function buildCard(h, isNew=false) {
       <div class="d-card-meta">
         ${riskBadge(h.cvss_max)}
         ${cveBadges(h.cves)}
+        ${tagBadges(h)}
         ${country?`<span class="d-card-country">${escHtml(country)}</span>`:''}
         <span class="d-card-time">${relTime(h.last_seen)}</span>
       </div>
@@ -183,12 +225,48 @@ function buildCard(h, isNew=false) {
   </a>`;
 }
 
+function tagList(h) {
+  return (h.tags||'').split(',').filter(Boolean);
+}
+
+function tagBadges(h) {
+  const tags = tagList(h);
+  if (!tags.length) return '';
+  const MAP = {
+    camera:'d-tag-camera', rtsp:'d-tag-rtsp', onvif:'d-tag-onvif',
+    login_panel:'d-tag-login', admin_panel:'d-tag-admin', open_dir:'d-tag-opendir',
+    default_creds:'d-tag-creds', exposed_db:'d-tag-db', exposed_docker:'d-tag-docker',
+    exposed_k8s:'d-tag-docker',
+  };
+  const LABEL = {
+    camera:'📷', rtsp:'📡 RTSP', onvif:'🎥 ONVIF', login_panel:'🔑 Login',
+    admin_panel:'⚙️ Admin', open_dir:'📂 Dir', default_creds:'🚨 Creds',
+    exposed_db:'🗄️ DB', exposed_docker:'🐳 Docker', exposed_k8s:'☸️ K8s',
+  };
+  return tags.slice(0,3).map(t =>
+    `<span class="d-tag ${MAP[t]||''}">${LABEL[t]||t}</span>`
+  ).join('');
+}
+
+function setTagFilter(el, tag) {
+  activeTagFilter = tag;
+  document.querySelectorAll('.tag-chip').forEach(c => c.classList.remove('active'));
+  el.classList.add('active');
+  page = 0;
+  // Reload from server with the tag filter so we see ALL matching hosts,
+  // not just the most-recent 500 that happen to be in the client window.
+  fetchHosts(0, tag);
+}
+
 function matchesFilters(h) {
   const q = document.getElementById('filterSearch').value.toLowerCase();
   const risk = document.getElementById('filterRisk').value;
   const svc = document.getElementById('filterService').value.toLowerCase();
+  if (activeTagFilter) {
+    if (!tagList(h).includes(activeTagFilter)) return false;
+  }
   if (q) {
-    const hay = [h.ip,h.product,h.version,h.service_name,h.service,h.country_code,h.country].filter(Boolean).join(' ').toLowerCase();
+    const hay = [h.ip,h.product,h.version,h.service_name,h.service,h.country_code,h.country,h.tags].filter(Boolean).join(' ').toLowerCase();
     if (!hay.includes(q)) return false;
   }
   if (risk) {
@@ -216,18 +294,62 @@ function applyFilters() {
   document.getElementById('loadMoreBtn').style.display = filtered.length>slice.length?'flex':'none';
 }
 
-function loadMore() { page++; applyFilters(); }
+function loadMore() {
+  // If viewing a category, load next page from server with that tag
+  if (activeTagFilter) {
+    fetchHosts(allCards.length, activeTagFilter);
+  } else {
+    page++;
+    applyFilters();
+  }
+}
 
-async function fetchHosts(offset=0, limit=500) {
+async function fetchHosts(offset=0, tag='', limit=500) {
   document.getElementById('discoverLoading').style.display = 'block';
   try {
-    const r = await fetch(`/api/discover?offset=${offset}&limit=${limit}`);
+    let url = `/api/discover?offset=${offset}&limit=${limit}`;
+    if (tag) url += `&tag=${encodeURIComponent(tag)}`;
+    const r = await fetch(url);
     const data = await r.json();
     if (offset===0) allCards = data.hosts||[];
     else allCards = allCards.concat(data.hosts||[]);
   } catch(e) { console.error('Discover load failed', e); }
   document.getElementById('discoverLoading').style.display = 'none';
   applyFilters();
+}
+
+async function fetchStats() {
+  try {
+    const d = await fetch('/api/discover/stats').then(r => r.json());
+    const el = document.getElementById('discoverStats');
+    el.style.display = '';
+    document.getElementById('dStatTotal').textContent =
+      `${(d.total_hosts||0).toLocaleString()} total hosts`;
+    document.getElementById('dStatTagged').textContent =
+      `${(d.tagged_hosts||0).toLocaleString()} tagged`;
+    const pt = d.per_tag || {};
+    const tagParts = Object.entries(pt)
+      .sort((a,b)=>b[1]-a[1])
+      .map(([t,n]) => `${t}: ${n}`)
+      .join(' · ');
+    document.getElementById('dStatPerTag').textContent = tagParts || 'no tags yet';
+    // Update tag chip labels with counts
+    document.querySelectorAll('.tag-chip[data-tag]').forEach(chip => {
+      const t = chip.getAttribute('data-tag');
+      if (!t) return;
+      const n = pt[t] || 0;
+      chip.setAttribute('data-count', n);
+      // Show count badge if >0
+      let badge = chip.querySelector('.tag-count');
+      if (!badge) {
+        badge = document.createElement('span');
+        badge.className = 'tag-count';
+        badge.style.cssText = 'margin-left:.25rem;opacity:.7;font-size:.65rem';
+        chip.appendChild(badge);
+      }
+      badge.textContent = n > 0 ? `(${n})` : '';
+    });
+  } catch(e) { console.error('Stats load failed', e); }
 }
 
 function connectCrawlStatus() {
@@ -267,9 +389,33 @@ function connectDiscoverFeed() {
   es.onerror = () => setTimeout(connectDiscoverFeed, 8000);
 }
 
-fetchHosts();
+// Pre-select tag from sidebar hash links e.g. /discover#tag=camera
+function applyHashTag() {
+  const h = location.hash.replace('#','');
+  if (h.startsWith('tag=')) {
+    const tag = h.slice(4);
+    const chip = document.querySelector(`.tag-chip[data-tag="${CSS.escape(tag)}"]`);
+    if (chip) {
+      activeTagFilter = tag;
+      document.querySelectorAll('.tag-chip').forEach(c => c.classList.remove('active'));
+      chip.classList.add('active');
+      page = 0;
+      // Will be loaded server-side by the upcoming fetchHosts() call if on boot,
+      // otherwise trigger a fresh load now.
+      if (document.readyState === 'complete') fetchHosts(0, tag);
+    }
+  }
+}
+applyHashTag();
+window.addEventListener('hashchange', applyHashTag);
+
+// Initial load: respect any hash-preselected tag
+fetchHosts(0, activeTagFilter);
+fetchStats();
 connectCrawlStatus();
 connectDiscoverFeed();
+// Refresh stats every 30s to reflect live tag counts
+setInterval(fetchStats, 30000);
 setInterval(() => { const f = allCards.filter(matchesFilters); const g = document.getElementById('discoverGrid'); g.innerHTML = f.slice(0,(page+1)*PAGE_SIZE).map(h=>buildCard(h)).join(''); }, 30000);
 </script>
 {% endblock %}

@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+{% block title %}Export{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="page-title">
+    <span class="pt-icon"><svg class="icon"><use href="#i-download"/></svg></span>
+    Export
+  </div>
+  <div class="page-sub">Download host data as JSON or CSV using the same query syntax as Search.</div>
+</div>
+
+<div class="grid-2" style="align-items:start">
+  <!-- Query builder -->
+  <div class="card" data-reveal>
+    <div class="card-title"><span class="ct-icon"><svg class="icon"><use href="#i-search"/></svg></span> Query &amp; Format</div>
+
+    <div class="form-row">
+      <label class="form-label">Filter query <span class="text-dim text-xs">(optional — same syntax as Search)</span></label>
+      <input class="form-input" id="exportQ" placeholder='e.g. port:22 country:US service:nginx' autocomplete="off">
+    </div>
+
+    <div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:.7rem">
+      <div>
+        <label class="form-label">Format</label>
+        <select class="form-input" id="exportFmt">
+          <option value="json">JSON</option>
+          <option value="csv">CSV</option>
+        </select>
+      </div>
+      <div>
+        <label class="form-label">Row limit</label>
+        <input class="form-input" id="exportLimit" type="number" value="10000" min="1" max="100000">
+      </div>
+    </div>
+
+    <div class="form-row">
+      <label class="form-label">Preview URL</label>
+      <code class="form-input text-xs text-dim" id="exportUrl" style="display:block;overflow-x:auto;white-space:nowrap;cursor:text;user-select:all">/api/export</code>
+    </div>
+
+    <div style="display:flex;gap:.6rem;margin-top:.4rem">
+      <button class="btn btn-primary" id="downloadBtn" onclick="doDownload()">
+        <svg class="icon"><use href="#i-download"/></svg> Download
+      </button>
+      <button class="btn" onclick="doCopyUrl()">
+        <svg class="icon"><use href="#i-clipboard"/></svg> Copy URL
+      </button>
+    </div>
+  </div>
+
+  <!-- Field reference -->
+  <div class="card" data-reveal>
+    <div class="card-title"><span class="ct-icon"><svg class="icon"><use href="#i-info"/></svg></span> Exported Fields</div>
+    <table class="data-table" style="font-size:.8rem">
+      <thead><tr><th>Field</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>ip</code></td><td>IPv4 address</td></tr>
+        <tr><td><code>port</code></td><td>TCP port number</td></tr>
+        <tr><td><code>service_name</code></td><td>Detected service (e.g. http, ssh)</td></tr>
+        <tr><td><code>product</code></td><td>Product/software name</td></tr>
+        <tr><td><code>version</code></td><td>Version string</td></tr>
+        <tr><td><code>http_title</code></td><td>HTTP page title</td></tr>
+        <tr><td><code>cvss_max</code></td><td>Highest CVSS score matched</td></tr>
+        <tr><td><code>cves</code></td><td>Comma-separated CVE list</td></tr>
+        <tr><td><code>kev</code></td><td>1 if in CISA KEV catalogue</td></tr>
+        <tr><td><code>first_seen</code></td><td>ISO-8601 timestamp</td></tr>
+        <tr><td><code>last_seen</code></td><td>ISO-8601 timestamp</td></tr>
+      </tbody>
+    </table>
+    <p class="text-xs text-dim mt-3">JSON export also includes <code>geo_json</code> and <code>tls_json</code> objects.</p>
+  </div>
+</div>
+
+<!-- Query syntax cheatsheet -->
+<div class="card mt-3" data-reveal>
+  <div class="card-title"><span class="ct-icon"><svg class="icon"><use href="#i-layers"/></svg></span> Query Syntax</div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:.5rem .9rem">
+    {% for ex in [
+      ('port:80', 'HTTP hosts'),
+      ('port:22', 'SSH hosts'),
+      ('service:nginx', 'nginx servers'),
+      ('country:US', 'United States'),
+      ('kev:true', 'CISA KEV entries'),
+      ('cvss:>7', 'High-severity hosts'),
+      ('product:Apache', 'Apache servers'),
+      ('title:login', 'Login pages'),
+    ] %}
+    <div style="font-size:.8rem">
+      <code style="color:var(--accent)">{{ ex[0] }}</code>
+      <span class="text-dim"> — {{ ex[1] }}</span>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function buildUrl() {
+  const q = document.getElementById('exportQ').value.trim();
+  const fmt = document.getElementById('exportFmt').value;
+  const limit = parseInt(document.getElementById('exportLimit').value, 10) || 10000;
+  let url = `/api/export?fmt=${encodeURIComponent(fmt)}&limit=${limit}`;
+  if (q) url += `&q=${encodeURIComponent(q)}`;
+  return url;
+}
+
+function updatePreview() {
+  document.getElementById('exportUrl').textContent = buildUrl();
+}
+
+['exportQ','exportFmt','exportLimit'].forEach(id =>
+  document.getElementById(id).addEventListener('input', updatePreview));
+
+function doDownload() {
+  const url = buildUrl();
+  const btn = document.getElementById('downloadBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Preparing…';
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = '';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => {
+    btn.disabled = false;
+    btn.innerHTML = '<svg class="icon"><use href="#i-download"/></svg> Download';
+  }, 2000);
+}
+
+function doCopyUrl() {
+  navigator.clipboard.writeText(location.origin + buildUrl())
+    .then(() => toast('URL copied', 'success'))
+    .catch(() => toast('Could not copy', 'error'));
+}
+
+updatePreview();
+</script>
+{% endblock %}

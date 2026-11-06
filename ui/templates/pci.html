@@ -1,0 +1,163 @@
+{% extends "base.html" %}
+{% block title %}PCI Findings{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="page-title">
+    <span class="pt-icon" style="color:var(--danger)"><svg class="icon"><use href="#i-alert"/></svg></span>
+    PCI Findings
+  </div>
+  <div class="page-sub">Payment-card patterns detected in live service banners — masked, Luhn-validated.</div>
+</div>
+
+<!-- Stats row -->
+<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:1.2rem">
+  <div class="stat-tile"><div class="st-val" id="kTotal">—</div><div class="st-lbl">Total Findings</div></div>
+  <div class="stat-tile"><div class="st-val" id="kValid">—</div><div class="st-lbl">Luhn Valid</div></div>
+  <div class="stat-tile"><div class="st-val" id="kNets">—</div><div class="st-lbl">Networks</div></div>
+  <div class="stat-tile"><div class="st-val" id="kHosts">—</div><div class="st-lbl">Unique Hosts</div></div>
+</div>
+
+<!-- Filters -->
+<div class="card mb-3" style="padding:.7rem 1rem" data-reveal>
+  <div style="display:flex;flex-wrap:wrap;gap:.5rem;align-items:center">
+    <input class="form-input" id="pciSearch" placeholder="Filter IP, network, issuer, country…"
+      style="max-width:260px" oninput="applyFilters()">
+    <select class="form-input" id="pciNetwork" style="max-width:160px" onchange="applyFilters()">
+      <option value="">All networks</option>
+      <option value="Visa">Visa</option>
+      <option value="MasterCard">MasterCard</option>
+      <option value="Amex">Amex</option>
+      <option value="Discover">Discover</option>
+      <option value="UnionPay">UnionPay</option>
+      <option value="JCB">JCB</option>
+    </select>
+    <select class="form-input" id="pciLuhn" style="max-width:150px" onchange="applyFilters()">
+      <option value="">Any Luhn</option>
+      <option value="1">Luhn valid</option>
+      <option value="0">Luhn invalid</option>
+    </select>
+    <span class="text-sm" style="color:var(--fg-dim)" id="pciCount">— findings</span>
+    <button class="btn btn-sm" style="margin-left:auto" onclick="loadMore()">Load more</button>
+  </div>
+</div>
+
+<!-- Table -->
+<div class="card" data-reveal>
+  <div style="overflow-x:auto">
+    <table class="data-table" id="pciTable">
+      <thead>
+        <tr>
+          <th>Masked PAN</th>
+          <th>Network</th>
+          <th>Luhn</th>
+          <th>Issuer</th>
+          <th>Country</th>
+          <th>Funding</th>
+          <th>Source Host</th>
+          <th>Service</th>
+          <th>Detected</th>
+        </tr>
+      </thead>
+      <tbody id="pciTbody">
+        <tr><td colspan="9" style="text-align:center;padding:2rem;color:var(--fg-dim)">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let allRows = [], offset = 0;
+const PAGE = 200;
+
+const NET_COLORS = {
+  Visa: '#1a56db', MasterCard: '#e74c3c', Amex: '#16a34a',
+  Discover: '#d97706', UnionPay: '#7c3aed', JCB: '#0891b2',
+};
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function relTime(iso) {
+  if (!iso) return '—';
+  const diff = Math.floor((Date.now() - new Date(iso)) / 1000);
+  if (diff < 60) return diff + 's ago';
+  if (diff < 3600) return Math.floor(diff/60) + 'm ago';
+  if (diff < 86400) return Math.floor(diff/3600) + 'h ago';
+  return Math.floor(diff/86400) + 'd ago';
+}
+
+function netBadge(net) {
+  if (!net) return '—';
+  const c = NET_COLORS[net] || '#6b7280';
+  return `<span style="font-size:.7rem;font-weight:700;padding:.08rem .4rem;border-radius:4px;background:${c}22;color:${c};border:1px solid ${c}44">${esc(net)}</span>`;
+}
+
+function luhnBadge(v) {
+  return v
+    ? `<span class="badge badge-ok">✓ valid</span>`
+    : `<span class="badge badge-warn">✗ invalid</span>`;
+}
+
+function buildRow(r) {
+  return `<tr>
+    <td><code style="font-size:.8rem;color:var(--fg);font-family:var(--font-mono)">${esc(r.masked_pan)}</code></td>
+    <td>${netBadge(r.card_network)}</td>
+    <td>${luhnBadge(r.luhn_valid)}</td>
+    <td>${esc(r.issuer||'—')}</td>
+    <td>${esc(r.country||'—')}</td>
+    <td style="color:var(--fg-dim);font-size:.8rem">${esc(r.funding_type||'—')}</td>
+    <td><a href="/host/${encodeURIComponent(r.ip)}" style="color:var(--accent);font-family:var(--font-mono);font-size:.85rem">${esc(r.ip)}</a><span style="color:var(--fg-dim)">:${esc(String(r.port))}</span></td>
+    <td style="color:var(--fg-dim);font-size:.8rem">${esc(r.service_name||'—')}</td>
+    <td style="font-size:.78rem;color:var(--fg-dim)" title="${esc(r.detected_at)}">${relTime(r.detected_at)}</td>
+  </tr>`;
+}
+
+function applyFilters() {
+  const q = document.getElementById('pciSearch').value.toLowerCase();
+  const net = document.getElementById('pciNetwork').value;
+  const luhn = document.getElementById('pciLuhn').value;
+  const filtered = allRows.filter(r => {
+    if (net && r.card_network !== net) return false;
+    if (luhn !== '' && String(r.luhn_valid) !== luhn) return false;
+    if (q) {
+      const hay = [r.ip, r.card_network, r.issuer, r.country, r.masked_pan, r.service_name].join(' ').toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+  document.getElementById('pciCount').textContent = filtered.length.toLocaleString() + ' findings';
+  document.getElementById('pciTbody').innerHTML = filtered.length
+    ? filtered.map(buildRow).join('')
+    : '<tr><td colspan="9" style="text-align:center;padding:2rem;color:var(--fg-dim)">No findings match.</td></tr>';
+  // Update kpis from full dataset
+  document.getElementById('kTotal').textContent = allRows.length.toLocaleString();
+  document.getElementById('kValid').textContent = allRows.filter(r=>r.luhn_valid).length.toLocaleString();
+  document.getElementById('kNets').textContent = new Set(allRows.map(r=>r.card_network).filter(Boolean)).size;
+  document.getElementById('kHosts').textContent = new Set(allRows.map(r=>r.ip)).size.toLocaleString();
+}
+
+async function fetchFindings(reset) {
+  if (reset) { allRows = []; offset = 0; }
+  const net = document.getElementById('pciNetwork').value;
+  const luhn = document.getElementById('pciLuhn').value;
+  let url = `/api/pci/findings?limit=${PAGE}&offset=${offset}`;
+  if (net) url += `&network=${encodeURIComponent(net)}`;
+  if (luhn) url += `&luhn=${luhn === '1' ? 'valid' : 'invalid'}`;
+  try {
+    const d = await fetch(url).then(r => r.json());
+    allRows = allRows.concat(d.findings || []);
+    offset += (d.findings || []).length;
+  } catch(e) { console.error('pci fetch', e); }
+  applyFilters();
+}
+
+function loadMore() { fetchFindings(false); }
+
+fetchFindings(true);
+</script>
+{% endblock %}

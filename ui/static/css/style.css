@@ -580,6 +580,68 @@ code, pre, kbd { font-family: var(--font-mono); }
   animation-delay: calc(var(--si, 0) * 22ms + 90ms);
 }
 
+/* ── Sidebar PCI card ───────────────────────────────────────────── */
+.sb-pci-card {
+  margin: .5rem .2rem .6rem;
+  padding: .65rem .75rem .6rem;
+  border-radius: 9px;
+  background: linear-gradient(135deg,
+    rgba(239,68,68,.09) 0%,
+    rgba(220,38,38,.03) 100%);
+  border: 1px solid rgba(239,68,68,.22);
+  transition: border-color var(--t-fast) var(--ease);
+}
+.sb-pci-card:hover { border-color: rgba(239,68,68,.45); }
+.sb-pci-card-head {
+  display: flex;
+  align-items: center;
+  gap: .35rem;
+  font-size: .6rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .13em;
+  color: var(--danger, #ef4444);
+  margin-bottom: .45rem;
+}
+.sb-pci-card-head .icon { width: 11px; height: 11px; flex-shrink: 0; }
+.sb-pci-count {
+  font-family: var(--font-mono);
+  font-size: 1.55rem;
+  font-weight: 700;
+  color: var(--fg);
+  line-height: 1;
+  letter-spacing: -.04em;
+}
+.sb-pci-label {
+  font-size: .67rem;
+  color: var(--fg-3);
+  margin-top: .22rem;
+}
+.sb-pci-nets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .2rem;
+  margin-top: .45rem;
+}
+.sb-pci-net {
+  font-size: .58rem;
+  font-weight: 600;
+  padding: .08rem .32rem;
+  border-radius: 4px;
+  background: var(--tint);
+  border: 1px solid var(--border-2);
+  color: var(--fg-2);
+}
+.sb-pci-view {
+  display: block;
+  margin-top: .5rem;
+  font-size: .68rem;
+  color: var(--danger, #ef4444);
+  opacity: .75;
+  transition: opacity var(--t-fast) var(--ease);
+}
+.sb-pci-view:hover { opacity: 1; }
+
 /* ═══ 9 · Page header / breadcrumb ════════════════════════════════ */
 .page-header { margin-bottom: 1.15rem; }
 

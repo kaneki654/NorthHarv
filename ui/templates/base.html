@@ -64,6 +64,8 @@
     <symbol id="i-sparkles" viewBox="0 0 24 24"><path d="M11 3l1.7 4.3L17 9l-4.3 1.7L11 15l-1.7-4.3L5 9l4.3-1.7L11 3z"/><path d="M18.5 14.5l.85 2.15L21.5 17.5l-2.15.85L18.5 20.5l-.85-2.15L15.5 17.5l2.15-.85L18.5 14.5z"/></symbol>
     <symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M4.6 12h14.8"/><path d="M14 6.6 19.4 12 14 17.4"/></symbol>
     <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 4.6h5.4V10"/><path d="M19.4 4.6 11.6 12.4"/><path d="M18 14v4.4a1.8 1.8 0 0 1-1.8 1.8H5.4a1.8 1.8 0 0 1-1.8-1.8V7.4a1.8 1.8 0 0 1 1.8-1.8H10"/></symbol>
+    <symbol id="i-camera" viewBox="0 0 24 24"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></symbol>
   </defs>
 </svg>
 
@@ -222,6 +224,12 @@
     <a href="/wordlists" class="sidebar-link {% if request.url.path == '/wordlists' %}active{% endif %}">
       <span class="sidebar-icon"><svg class="icon"><use href="#i-scope"/></svg></span> Discovery Engine
     </a>
+    <a href="/pci" class="sidebar-link {% if request.url.path == '/pci' %}active{% endif %}">
+      <span class="sidebar-icon" style="color:var(--danger)"><svg class="icon"><use href="#i-alert"/></svg></span> PCI Findings
+    </a>
+    <a href="/export" class="sidebar-link {% if request.url.path == '/export' %}active{% endif %}">
+      <span class="sidebar-icon"><svg class="icon"><use href="#i-download"/></svg></span> Export
+    </a>
 
     <div class="sidebar-label">Quick Filters</div>
     <a href="/search?q=port:22" class="sidebar-link">
@@ -244,6 +252,39 @@
     </a>
     <a href="/search?q=port:6379" class="sidebar-link">
       <span class="sidebar-icon" style="color:var(--danger)"><svg class="icon"><use href="#i-dot-circle"/></svg></span> Redis <span class="sb-count">6379</span>
+    </a>
+
+    <div class="sb-pci-card" id="sbPciCard">
+      <div class="sb-pci-card-head">
+        <svg class="icon"><use href="#i-alert"/></svg>
+        PCI Findings
+      </div>
+      <div class="sb-pci-count" id="sbPciCount">—</div>
+      <div class="sb-pci-label" id="sbPciLabel">payment cards in banners</div>
+      <div class="sb-pci-nets" id="sbPciNets"></div>
+      <a class="sb-pci-view" href="/pci">
+        View findings →
+      </a>
+    </div>
+
+    <div class="sidebar-label">Discovery Tags</div>
+    <a href="/discover#tag=camera" class="sidebar-link">
+      <span class="sidebar-icon"><svg class="icon"><use href="#i-camera"/></svg></span> Cameras
+    </a>
+    <a href="/discover#tag=rtsp" class="sidebar-link">
+      <span class="sidebar-icon"><svg class="icon"><use href="#i-radio"/></svg></span> RTSP
+    </a>
+    <a href="/discover#tag=admin_panel" class="sidebar-link">
+      <span class="sidebar-icon"><svg class="icon"><use href="#i-shield"/></svg></span> Admin Panels
+    </a>
+    <a href="/discover#tag=login_panel" class="sidebar-link">
+      <span class="sidebar-icon"><svg class="icon"><use href="#i-lock"/></svg></span> Login Panels
+    </a>
+    <a href="/discover#tag=exposed_db" class="sidebar-link">
+      <span class="sidebar-icon" style="color:var(--danger)"><svg class="icon"><use href="#i-database"/></svg></span> Exposed DBs
+    </a>
+    <a href="/discover#tag=open_dir" class="sidebar-link">
+      <span class="sidebar-icon"><svg class="icon"><use href="#i-folder"/></svg></span> Open Dirs
     </a>
   </aside>
 
@@ -277,6 +318,28 @@
 
 <script src="/static/js/main.js?v={{ asset_v('js/main.js') }}"></script>
 {% block scripts %}{% endblock %}
+<script>
+(function(){
+  fetch('/api/pci/findings?limit=5')
+    .then(r=>r.json())
+    .then(d=>{
+      const total = d.total ?? 0;
+      document.getElementById('sbPciCount').textContent = total.toLocaleString();
+      document.getElementById('sbPciLabel').textContent =
+        total === 0 ? 'no exposures detected'
+        : total === 1 ? 'card pattern detected'
+        : 'card patterns detected';
+      // Show unique networks as chips
+      const nets = [...new Set((d.findings||[]).map(f=>f.card_network).filter(Boolean))];
+      const netsEl = document.getElementById('sbPciNets');
+      netsEl.innerHTML = nets.slice(0,4)
+        .map(n=>`<span class="sb-pci-net">${n}</span>`).join('');
+    })
+    .catch(()=>{
+      document.getElementById('sbPciLabel').textContent = 'unavailable';
+    });
+})();
+</script>
 <!-- guided tour: self-contained overlay, runs once then on demand -->
 <script src="/static/js/tutorial.js?v={{ asset_v('js/tutorial.js') }}" defer></script>
 </body>

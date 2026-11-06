@@ -200,6 +200,22 @@
     <div class="text-dim text-sm flex items-center gap-2"><span class="spinner"></span> Loading…</div>
   </div>
 </div>
+
+<!-- ══════════════════ Signatures ══════════════════ -->
+<div class="card mt-4" data-reveal>
+  <div class="card-title" style="display:flex;align-items:center;justify-content:space-between">
+    <span style="display:flex;align-items:center;gap:.5rem">
+      <span class="ct-icon"><svg class="icon"><use href="#i-shield"/></svg></span> Signature Databases
+    </span>
+    <button class="btn btn-sm" id="sigRefreshBtn" onclick="sigRefresh(false)">
+      <svg class="icon"><use href="#i-refresh"/></svg> Refresh
+    </button>
+  </div>
+  <div id="sigStatus">
+    <div class="text-dim text-sm" style="display:flex;align-items:center;gap:.5rem"><span class="spinner"></span> Loading…</div>
+  </div>
+  <div class="mt-2" id="sigMsg" style="display:none;font-size:.8rem;color:var(--fg-dim)"></div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -397,5 +413,62 @@ async function startSync() {
 }
 
 loadStatus();
+
+/* ── Signatures ───────────────────────────────────────────────────── */
+async function loadSigStatus() {
+  const d = await fetch('/api/signatures/status').then(r => r.json()).catch(() => null);
+  if (!d) {
+    document.getElementById('sigStatus').innerHTML =
+      '<span class="text-dim text-sm">Could not load signature status.</span>';
+    return;
+  }
+  const dbs = d.databases || {};
+  const DB_LABELS = { tech: 'Technology', jarm: 'JARM', waf: 'WAF' };
+  const rows = Object.entries(dbs).map(([key, db]) => {
+    const ageH = db.age_seconds != null ? Math.round(db.age_seconds / 3600) : null;
+    const ageTxt = ageH == null ? '—' : ageH < 24 ? ageH + 'h old' : Math.round(ageH/24) + 'd old';
+    const staleBadge = db.stale
+      ? `<span class="badge badge-kev">stale</span>`
+      : `<span class="badge badge-success">fresh</span>`;
+    const fallbackNote = db.fallback
+      ? `<span class="badge badge-warn">fallback</span>` : '';
+    return `<tr>
+      <td><strong>${DB_LABELS[key] || key}</strong></td>
+      <td>${(db.count||0).toLocaleString()} rules</td>
+      <td>${db.cached_files||0} files</td>
+      <td>${ageTxt}</td>
+      <td>${staleBadge} ${fallbackNote}</td>
+      <td style="font-size:.75rem;color:var(--fg-dim);max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escHtml(db.source||'')}">${escHtml(db.source||'—')}</td>
+    </tr>`;
+  }).join('');
+  document.getElementById('sigStatus').innerHTML = rows
+    ? `<table class="data-table" style="font-size:.82rem"><thead><tr>
+        <th>Database</th><th>Count</th><th>Files</th><th>Age</th><th>Status</th><th>Source</th>
+      </tr></thead><tbody>${rows}</tbody></table>`
+    : '<span class="text-dim text-sm">No signature databases found.</span>';
+}
+
+async function sigRefresh(force) {
+  const btn = document.getElementById('sigRefreshBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>';
+  const msgEl = document.getElementById('sigMsg');
+  const r = await fetch('/api/signatures/refresh', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({force: !!force})
+  }).then(r => r.json()).catch(() => null);
+  btn.disabled = false;
+  btn.innerHTML = `<svg class="icon"><use href="#i-refresh"/></svg> Refresh`;
+  if (r?.ok) {
+    msgEl.style.display = '';
+    msgEl.textContent = r.message || 'Refresh started.';
+    setTimeout(loadSigStatus, 2000);
+  } else {
+    toast('Could not start refresh', 'error');
+  }
+}
+
+loadSigStatus();
 </script>
 {% endblock %}
