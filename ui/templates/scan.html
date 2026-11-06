@@ -113,7 +113,6 @@ const term = new NHTerminal('scanLog', { cps: 760 });
 
 function log(msg, cls = 'log-info', opts) { term.write(msg, cls, opts); }
 
-/* boot sequence — typed, like a console attaching to the engine */
 (function boot() {
   log('NorthHarv scan engine v1.0 — session attached', 'log-hi');
   log('pipeline: discovery → banner grab → TLS → CVE correlation', 'log-dim');

@@ -1,0 +1,275 @@
+{% extends "base.html" %}
+{% block title %}Discover{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="page-title">
+    <span class="pt-icon"><svg class="icon"><use href="#i-globe"/></svg></span>
+    Discover
+  </div>
+  <div class="page-sub">Live internet-wide IPv4 host discovery — crawling the entire routable address space.</div>
+</div>
+
+<!-- ── Crawl status bar ─────────────────────────────────────────────────── -->
+<div class="card mb-4" data-reveal>
+  <div class="flex items-center gap-3" style="flex-wrap:wrap">
+    <span id="crawlLiveDot" class="live-dot live-dot-idle" title="Crawl status"></span>
+    <span id="crawlStatusText" class="text-sm text-dim">Connecting…</span>
+    <span class="text-dim" style="margin:0 4px">·</span>
+    <span class="text-xs text-mono text-dim" id="crawlChunks">— / —</span>
+    <span class="text-dim" style="margin:0 4px">·</span>
+    <span class="text-xs text-mono text-dim" id="crawlPct">—</span>
+    <div style="flex:1;min-width:120px;max-width:300px">
+      <div class="progress-wrap" style="height:4px">
+        <div class="progress-bar" id="crawlBar" style="width:0%"></div>
+      </div>
+    </div>
+    <span class="text-xs text-dim" id="crawlCurrentChunk" style="font-family:var(--font-mono)"></span>
+  </div>
+</div>
+
+<!-- ── Filter bar ───────────────────────────────────────────────────────── -->
+<div class="flex gap-2 mb-4 items-center" style="flex-wrap:wrap" id="filterBar">
+  <input class="form-input" id="filterSearch" placeholder="Filter: IP, product, country, service…"
+    style="max-width:280px" oninput="applyFilters()">
+  <select class="form-input" id="filterRisk" style="max-width:160px" onchange="applyFilters()">
+    <option value="">Any risk</option>
+    <option value="critical">Critical (9+)</option>
+    <option value="high">High (7+)</option>
+    <option value="medium">Medium (4+)</option>
+    <option value="low">Low</option>
+    <option value="none">No CVEs</option>
+  </select>
+  <select class="form-input" id="filterService" style="max-width:160px" onchange="applyFilters()">
+    <option value="">Any service</option>
+    <option value="http">HTTP</option>
+    <option value="https">HTTPS</option>
+    <option value="ssh">SSH</option>
+    <option value="ftp">FTP</option>
+    <option value="smtp">SMTP</option>
+    <option value="rdp">RDP</option>
+    <option value="telnet">Telnet</option>
+  </select>
+  <span class="text-xs text-dim" id="filterCount"></span>
+</div>
+
+<!-- ── Card grid ────────────────────────────────────────────────────────── -->
+<div id="discoverGrid" class="discover-grid"></div>
+
+<div id="discoverEmpty" class="text-center text-dim mt-6" style="display:none">
+  <svg class="icon" style="font-size:2.5rem;opacity:.3"><use href="#i-globe"/></svg>
+  <div class="mt-2">No hosts discovered yet — the crawler is running in the background.</div>
+</div>
+
+<div id="discoverLoading" class="text-center mt-4">
+  <span class="spinner"></span>
+</div>
+
+<button id="loadMoreBtn" class="btn btn-ghost mt-4"
+  onclick="loadMore()" style="display:none;margin:0 auto">
+  <svg class="icon"><use href="#i-arrow-right"/></svg> Load more
+</button>
+{% endblock %}
+
+{% block scripts %}
+<style>
+.discover-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1rem;
+}
+.d-card {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  transition: transform .15s, box-shadow .15s;
+  text-decoration: none;
+  display: block;
+}
+.d-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 24px rgba(0,0,0,.18);
+}
+.d-card-banner { height: 7px; background: var(--primary); }
+.d-card-body { padding: .9rem 1rem; }
+.d-card-ip { font-family: var(--font-mono); font-size: .85rem; font-weight: 700; color: var(--fg-1); margin-bottom: .2rem; }
+.d-card-port { font-family: var(--font-mono); font-size: .75rem; color: var(--fg-3); }
+.d-card-product { font-size: .78rem; color: var(--fg-2); margin: .35rem 0 .4rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.d-card-meta { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; margin-top: .45rem; }
+.d-card-country { font-size: .68rem; background: var(--surface-2); padding: .15rem .45rem; border-radius: 20px; color: var(--fg-3); }
+.d-card-time { font-size: .65rem; color: var(--fg-4); margin-left: auto; }
+.d-banner-http    { background: #3b82f6; }
+.d-banner-https   { background: #10b981; }
+.d-banner-ssh     { background: #8b5cf6; }
+.d-banner-ftp     { background: #f59e0b; }
+.d-banner-smtp    { background: #f97316; }
+.d-banner-rdp     { background: #ef4444; }
+.d-banner-telnet  { background: #64748b; }
+.d-banner-dns     { background: #06b6d4; }
+.d-banner-db      { background: #d97706; }
+.d-banner-unknown { background: var(--fg-4); }
+.live-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+.live-dot-active  { background: var(--success); animation: pulse 1.6s infinite; }
+.live-dot-idle    { background: var(--fg-4); }
+.live-dot-stopped { background: var(--warning); }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+@keyframes cardIn { from{opacity:0;transform:translateY(12px)} to{opacity:1;transform:translateY(0)} }
+.d-card-new { animation: cardIn .3s ease-out both; }
+</style>
+
+<script>
+let allCards = [];
+let page = 0;
+const PAGE_SIZE = 60;
+
+function escHtml(s) {
+  return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function relTime(iso) {
+  if (!iso) return '';
+  const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s/60)}m ago`;
+  if (s < 86400) return `${Math.floor(s/3600)}h ago`;
+  return `${Math.floor(s/86400)}d ago`;
+}
+function bannerClass(svc) {
+  const s = (svc||'').toLowerCase();
+  if (s.includes('https')||s.includes('ssl')||s.includes('tls')) return 'd-banner-https';
+  if (s.includes('http')) return 'd-banner-http';
+  if (s.includes('ssh'))  return 'd-banner-ssh';
+  if (s.includes('ftp'))  return 'd-banner-ftp';
+  if (s.includes('smtp')||s.includes('mail')) return 'd-banner-smtp';
+  if (s.includes('rdp')||s.includes('3389')) return 'd-banner-rdp';
+  if (s.includes('telnet')) return 'd-banner-telnet';
+  if (s.includes('dns'))  return 'd-banner-dns';
+  if (s.includes('mysql')||s.includes('postgres')||s.includes('redis')||s.includes('mssql')) return 'd-banner-db';
+  return 'd-banner-unknown';
+}
+function riskBadge(cvss) {
+  const v = parseFloat(cvss)||0;
+  if (v>=9) return `<span class="badge badge-kev">CRIT ${v.toFixed(1)}</span>`;
+  if (v>=7) return `<span class="badge badge-high">HIGH ${v.toFixed(1)}</span>`;
+  if (v>=4) return `<span class="badge badge-medium">MED ${v.toFixed(1)}</span>`;
+  if (v>0)  return `<span class="badge badge-low">LOW ${v.toFixed(1)}</span>`;
+  return '';
+}
+function cveBadges(cves) {
+  if (!cves) return '';
+  const list = cves.split(',').filter(Boolean);
+  if (!list.length) return '';
+  const show = list.slice(0,2).map(c=>`<span class="badge badge-kev text-xs">${escHtml(c)}</span>`).join('');
+  const more = list.length>2 ? `<span class="text-xs text-dim">+${list.length-2}</span>` : '';
+  return show+more;
+}
+function buildCard(h, isNew=false) {
+  const svc = h.service_name||h.service||'';
+  const prod = [h.product,h.version].filter(Boolean).join(' ')||svc||'—';
+  const country = h.country_code||h.country||'';
+  return `<a class="d-card${isNew?' d-card-new':''}" href="/host/${encodeURIComponent(h.ip)}">
+    <div class="d-card-banner ${bannerClass(svc)}"></div>
+    <div class="d-card-body">
+      <div class="d-card-ip">${escHtml(h.ip)}</div>
+      <div class="d-card-port">:${escHtml(String(h.port))} · ${escHtml(svc||'unknown')}</div>
+      <div class="d-card-product" title="${escHtml(prod)}">${escHtml(prod)}</div>
+      <div class="d-card-meta">
+        ${riskBadge(h.cvss_max)}
+        ${cveBadges(h.cves)}
+        ${country?`<span class="d-card-country">${escHtml(country)}</span>`:''}
+        <span class="d-card-time">${relTime(h.last_seen)}</span>
+      </div>
+    </div>
+  </a>`;
+}
+
+function matchesFilters(h) {
+  const q = document.getElementById('filterSearch').value.toLowerCase();
+  const risk = document.getElementById('filterRisk').value;
+  const svc = document.getElementById('filterService').value.toLowerCase();
+  if (q) {
+    const hay = [h.ip,h.product,h.version,h.service_name,h.service,h.country_code,h.country].filter(Boolean).join(' ').toLowerCase();
+    if (!hay.includes(q)) return false;
+  }
+  if (risk) {
+    const v = parseFloat(h.cvss_max)||0;
+    if (risk==='critical' && v<9)  return false;
+    if (risk==='high'     && v<7)  return false;
+    if (risk==='medium'   && v<4)  return false;
+    if (risk==='low'      && (v<=0||v>=4)) return false;
+    if (risk==='none'     && v>0)  return false;
+  }
+  if (svc) {
+    const s = (h.service_name||h.service||'').toLowerCase();
+    if (!s.includes(svc)) return false;
+  }
+  return true;
+}
+
+function applyFilters() {
+  const filtered = allCards.filter(matchesFilters);
+  document.getElementById('filterCount').textContent = `${filtered.length} host${filtered.length!==1?'s':''}`;
+  const grid = document.getElementById('discoverGrid');
+  const slice = filtered.slice(0, (page+1)*PAGE_SIZE);
+  grid.innerHTML = slice.map(h=>buildCard(h)).join('');
+  document.getElementById('discoverEmpty').style.display = filtered.length?'none':'block';
+  document.getElementById('loadMoreBtn').style.display = filtered.length>slice.length?'flex':'none';
+}
+
+function loadMore() { page++; applyFilters(); }
+
+async function fetchHosts(offset=0, limit=500) {
+  document.getElementById('discoverLoading').style.display = 'block';
+  try {
+    const r = await fetch(`/api/discover?offset=${offset}&limit=${limit}`);
+    const data = await r.json();
+    if (offset===0) allCards = data.hosts||[];
+    else allCards = allCards.concat(data.hosts||[]);
+  } catch(e) { console.error('Discover load failed', e); }
+  document.getElementById('discoverLoading').style.display = 'none';
+  applyFilters();
+}
+
+function connectCrawlStatus() {
+  const es = new EventSource('/api/crawl/stream');
+  es.onmessage = e => {
+    try {
+      const d = JSON.parse(e.data);
+      const running = d.running||d.status==='running';
+      const done = parseInt(d.chunks_done)||0;
+      const total = parseInt(d.chunks_total)||0;
+      const pct = total>0?Math.min(100,Math.round(done/total*100)):0;
+      document.getElementById('crawlLiveDot').className =
+        'live-dot '+(running?'live-dot-active':(d.status==='stopped'?'live-dot-stopped':'live-dot-idle'));
+      document.getElementById('crawlStatusText').textContent =
+        running?'Crawling internet…':(d.status==='stopped'?'Paused':'Starting…');
+      document.getElementById('crawlChunks').textContent =
+        total?`${done.toLocaleString()} / ${total.toLocaleString()} /24 blocks`:'—';
+      document.getElementById('crawlPct').textContent = total?`${pct}%`:'—';
+      nhProgress(document.getElementById('crawlBar'), pct, running?'active':'idle');
+      if (d.current_chunk) document.getElementById('crawlCurrentChunk').textContent = d.current_chunk;
+    } catch {}
+  };
+  es.onerror = () => setTimeout(connectCrawlStatus, 5000);
+}
+
+function connectDiscoverFeed() {
+  const es = new EventSource('/api/discover/feed');
+  es.onmessage = e => {
+    try {
+      const d = JSON.parse(e.data);
+      if (d.event==='new_hosts' && d.hosts && d.hosts.length) {
+        allCards = d.hosts.concat(allCards);
+        applyFilters();
+      }
+    } catch {}
+  };
+  es.onerror = () => setTimeout(connectDiscoverFeed, 8000);
+}
+
+fetchHosts();
+connectCrawlStatus();
+connectDiscoverFeed();
+setInterval(() => { const f = allCards.filter(matchesFilters); const g = document.getElementById('discoverGrid'); g.innerHTML = f.slice(0,(page+1)*PAGE_SIZE).map(h=>buildCard(h)).join(''); }, 30000);
+</script>
+{% endblock %}

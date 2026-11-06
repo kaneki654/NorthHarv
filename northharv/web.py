@@ -7,6 +7,7 @@ import csv
 import io
 import json
 import os
+import random as _random
 import sqlite3
 import sys
 import threading
@@ -93,6 +94,17 @@ scan_queues: dict[str, asyncio.Queue] = {}
 # enum_id -> {"status","target","wordlist","results":[...]}
 active_enums: dict[str, dict[str, Any]] = {}
 
+# ── Internet crawl state ─────────────────────────────────────────────────────
+_crawl_meta: dict[str, Any] = {}
+_crawl_task: Optional[asyncio.Task] = None
+_crawl_stop_event: Optional[asyncio.Event] = None
+_crawl_sse_queues: list[asyncio.Queue] = []
+
+CRAWL_PARALLEL = int(os.getenv("CRAWL_PARALLEL", "8"))
+
+# ── Discover feed state ───────────────────────────────────────────────────────
+_discover_sse_queues: list[asyncio.Queue] = []
+
 # ── Startup ─────────────────────────────────────────────────────────────────
 @app.on_event("startup")
 async def _startup():
@@ -100,6 +112,7 @@ async def _startup():
     engine.GEO = engine.GeoDB()
     engine.CVE = engine.CveDB()
     _ensure_annotations_table()
+    _auto_start_crawl()
 
 
 def _ensure_annotations_table():
@@ -1216,6 +1229,306 @@ async def api_report():
                  f'attachment; filename=northharv-report-{stamp}.html'})
 
 
+# ── Internet crawl ────────────────────────────────────────────────────────────
+
+def _auto_start_crawl():
+    """Called at startup: always start or resume the internet crawl."""
+    try:
+        st = engine.crawl_load_state()
+        ports_str = st.get("ports", "")
+        ports = [int(x) for x in ports_str.split(",") if x.strip()] if ports_str else engine.TOP_PORTS
+        name = st.get("scan_name", "Internet Crawl")
+        resume = bool(st.get("lcg_state") and st.get("lcg_start"))
+        asyncio.get_event_loop().create_task(_launch_crawl(ports, name, resume=resume))
+    except Exception as exc:
+        engine.log.warning("crawl auto-start failed: %s", exc)
+
+
+async def _broadcast_crawl(msg: dict) -> None:
+    for q in list(_crawl_sse_queues):
+        try:
+            q.put_nowait(msg)
+        except asyncio.QueueFull:
+            pass
+
+
+async def _broadcast_discover(hosts: list) -> None:
+    if not hosts:
+        return
+    msg = {"event": "new_hosts", "hosts": hosts}
+    for q in list(_discover_sse_queues):
+        try:
+            q.put_nowait(msg)
+        except asyncio.QueueFull:
+            pass
+
+
+async def _launch_crawl(ports: list, name: str, resume: bool = False) -> None:
+    global _crawl_task, _crawl_stop_event
+    _crawl_stop_event = asyncio.Event()
+    _crawl_task = asyncio.ensure_future(_run_crawl(ports, name, resume=resume))
+
+
+async def _run_crawl(ports: list, name: str, resume: bool = False) -> None:
+    global _crawl_meta
+    import ipaddress as _ip
+
+    db_state = engine.crawl_load_state()
+    chunks_total = engine.crawl_total_chunks()
+
+    if resume and db_state.get("lcg_state") and db_state.get("lcg_start"):
+        lcg_state = int(db_state["lcg_state"])
+        lcg_start = int(db_state["lcg_start"])
+        chunks_done = int(db_state.get("chunks_done") or 0)
+        started_at = db_state.get("started_at") or datetime.now(timezone.utc).isoformat()
+    else:
+        lcg_state = _random.randint(0, engine._CRAWL_LCG_M - 1)
+        lcg_start = lcg_state
+        chunks_done = 0
+        started_at = datetime.now(timezone.utc).isoformat()
+
+    _crawl_meta = {
+        "status": "running",
+        "chunks_done": chunks_done,
+        "chunks_total": chunks_total,
+        "current_chunk": "",
+        "started_at": started_at,
+    }
+
+    engine.crawl_save_state(
+        status="running",
+        started_at=started_at,
+        lcg_state=lcg_state,
+        lcg_start=lcg_start,
+        chunks_done=chunks_done,
+        chunks_total=chunks_total,
+        scan_name=name,
+        ports=",".join(map(str, ports)),
+    )
+
+    await _broadcast_crawl({
+        "event": "started",
+        "chunks_total": chunks_total,
+        "chunks_done": chunks_done,
+        "resumed": resume,
+    })
+
+    loop = asyncio.get_event_loop()
+    enrich_sem = asyncio.Semaphore(64)
+    cycle_done = False
+
+    async def _scan_chunk(cidr: str) -> int:
+        """Scan one /24: masscan → asyncio fallback → enrich. Returns hosts_found."""
+        nets = [_ip.ip_network(cidr, strict=False)]
+        rid = engine.start_round(cidr, ports)
+        try:
+            found = await loop.run_in_executor(
+                None, engine.discover_masscan, cidr, ports, nets, 1
+            )
+        except Exception:
+            found = await engine.discover_asyncio(cidr, ports, nets)
+
+        if found:
+            async def _enrich(ip: str, port: int) -> None:
+                async with enrich_sem:
+                    await engine.enrich_and_store(ip, port, rid)
+            await asyncio.gather(*[_enrich(ip, p) for ip, p in found])
+
+        engine.finish_round(rid, len(found))
+
+        if found and _discover_sse_queues:
+            ips = list({ip for ip, _ in found})
+            try:
+                conn = engine.db()
+                conn.row_factory = sqlite3.Row
+                placeholders = ",".join("?" * len(ips))
+                new_rows = conn.execute(
+                    "SELECT ip, port, service_name, product, version, cvss_max, cves, last_seen, "
+                    "json_extract(geo_json,'$.country_code') as country_code "
+                    f"FROM hosts WHERE ip IN ({placeholders}) ORDER BY last_seen DESC",
+                    ips,
+                ).fetchall()
+                conn.close()
+                asyncio.ensure_future(_broadcast_discover([dict(r) for r in new_rows]))
+            except Exception as _exc:
+                engine.log.debug("discover broadcast failed: %s", _exc)
+
+        return len(found)
+
+    first = True
+    while not _crawl_stop_event.is_set() and not cycle_done:  # type: ignore[union-attr]
+        # Collect next CRAWL_PARALLEL CIDRs to scan in parallel
+        batch: list[str] = []
+        while len(batch) < CRAWL_PARALLEL:
+            if not first and lcg_state == lcg_start:
+                cycle_done = True
+                break
+            first = False
+            cidr = engine.crawl_lcg_to_cidr(lcg_state)
+            lcg_state = engine.crawl_lcg_step(lcg_state)
+            if cidr is not None:
+                batch.append(cidr)
+
+        if not batch:
+            break
+
+        _crawl_meta["current_chunk"] = batch[0]
+
+        results = await asyncio.gather(
+            *[_scan_chunk(c) for c in batch],
+            return_exceptions=True,
+        )
+
+        batch_found = sum(r for r in results if isinstance(r, int))
+        chunks_done += len(batch)
+        _crawl_meta["chunks_done"] = chunks_done
+
+        engine.crawl_save_state(
+            lcg_state=lcg_state,
+            chunks_done=chunks_done,
+            last_chunk=batch[-1],
+            status="running",
+        )
+
+        await _broadcast_crawl({
+            "event": "chunk_done",
+            "cidr": batch[0],
+            "chunks_done": chunks_done,
+            "chunks_total": chunks_total,
+            "hosts_found": batch_found,
+        })
+
+    if cycle_done:
+        await _broadcast_crawl({"event": "cycle_complete", "chunks_done": chunks_done})
+
+    final_status = "stopped"
+    _crawl_meta["status"] = final_status
+    engine.crawl_save_state(
+        status=final_status,
+        lcg_state=lcg_state,
+        chunks_done=chunks_done,
+    )
+    await _broadcast_crawl({
+        "event": "stopped",
+        "chunks_done": chunks_done,
+        "chunks_total": chunks_total,
+    })
+
+
+@app.post("/api/crawl/start")
+async def api_crawl_start(request: Request):
+    global _crawl_task, _crawl_stop_event
+    if _crawl_task and not _crawl_task.done():
+        raise HTTPException(409, "Crawl already running")
+    body = await request.json()
+    ports_str = body.get("ports", "")
+    name = body.get("name", "Internet Crawl")
+    ports = [int(x) for x in ports_str.split(",") if x.strip()] if ports_str else engine.TOP_PORTS
+
+    db_state = engine.crawl_load_state()
+    resume = bool(db_state.get("lcg_state") and db_state.get("lcg_start"))
+
+    await _launch_crawl(ports, name, resume=resume)
+    return {"ok": True, "status": "started", "resumed": resume}
+
+
+@app.post("/api/crawl/stop")
+async def api_crawl_stop():
+    if _crawl_stop_event:
+        _crawl_stop_event.set()
+    return {"ok": True}
+
+
+@app.get("/api/crawl/status")
+async def api_crawl_status():
+    db_state = engine.crawl_load_state()
+    running = bool(_crawl_task and not _crawl_task.done())
+    return {
+        **db_state,
+        **_crawl_meta,
+        "running": running,
+    }
+
+
+@app.get("/api/crawl/stream")
+async def api_crawl_stream(request: Request):
+    q: asyncio.Queue = asyncio.Queue(maxsize=200)
+    _crawl_sse_queues.append(q)
+
+    async def gen():
+        try:
+            # Send current status immediately so the page knows whether crawl is active
+            status_snapshot = {
+                **engine.crawl_load_state(),
+                **_crawl_meta,
+                "event": "status",
+                "running": bool(_crawl_task and not _crawl_task.done()),
+            }
+            yield f"data: {json.dumps(status_snapshot)}\n\n"
+            while True:
+                try:
+                    msg = await asyncio.wait_for(q.get(), timeout=20)
+                    yield f"data: {json.dumps(msg)}\n\n"
+                    if msg.get("event") in ("stopped", "cycle_complete"):
+                        break
+                except asyncio.TimeoutError:
+                    yield f"data: {json.dumps({'event': 'ping'})}\n\n"
+        except (asyncio.CancelledError, GeneratorExit):
+            pass
+        finally:
+            try:
+                _crawl_sse_queues.remove(q)
+            except ValueError:
+                pass
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# ── API: Discover ─────────────────────────────────────────────────────────────
+@app.get("/api/discover")
+async def api_discover(offset: int = Query(0, ge=0), limit: int = Query(500, le=2000)):
+    rows = _db_dict(
+        "SELECT ip, port, service_name, product, version, cvss_max, cves, last_seen, "
+        "json_extract(geo_json,'$.country_code') as country_code "
+        "FROM hosts ORDER BY last_seen DESC "
+        f"LIMIT {limit} OFFSET {offset}"
+    )
+    return {"hosts": rows, "offset": offset, "count": len(rows)}
+
+
+@app.get("/api/discover/feed")
+async def api_discover_feed(request: Request):
+    q: asyncio.Queue = asyncio.Queue(maxsize=200)
+    _discover_sse_queues.append(q)
+
+    async def gen():
+        try:
+            yield f"data: {json.dumps({'event': 'connected'})}\n\n"
+            while True:
+                try:
+                    msg = await asyncio.wait_for(q.get(), timeout=25)
+                    yield f"data: {json.dumps(msg)}\n\n"
+                except asyncio.TimeoutError:
+                    yield f"data: {json.dumps({'event': 'ping'})}\n\n"
+        except (asyncio.CancelledError, GeneratorExit):
+            pass
+        finally:
+            try:
+                _discover_sse_queues.remove(q)
+            except ValueError:
+                pass
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 # ── UI Routes ─────────────────────────────────────────────────────────────────
 def _resp(request: Request, name: str, ctx: dict = {}):
     """TemplateResponse helper compatible with both old and new Starlette."""
@@ -1243,6 +1556,11 @@ async def ui_host(request: Request, ip: str):
 @app.get("/scan")
 async def ui_scan(request: Request):
     return _resp(request, "scan.html")
+
+
+@app.get("/discover")
+async def ui_discover(request: Request):
+    return _resp(request, "discover.html")
 
 
 @app.get("/feeds")

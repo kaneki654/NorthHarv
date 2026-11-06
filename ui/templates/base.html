@@ -154,6 +154,9 @@
     </form>
 
     <div class="nav-actions">
+      <a href="/discover" class="nav-link {% if request.url.path == '/discover' %}active{% endif %}">
+        <svg class="icon"><use href="#i-globe"/></svg><span>Discover</span>
+      </a>
       <a href="/scan" class="nav-link {% if request.url.path == '/scan' %}active{% endif %}">
         <svg class="icon"><use href="#i-bolt"/></svg><span>Scan</span>
       </a>
@@ -170,6 +173,9 @@
   <!-- ══════════════════ Sidebar ══════════════════ -->
   <aside class="sidebar">
     <div class="sidebar-label">Explore</div>
+    <a href="/discover" class="sidebar-link {% if request.url.path == '/discover' %}active{% endif %}">
+      <span class="sidebar-icon" style="color:var(--primary)"><svg class="icon"><use href="#i-globe"/></svg></span> Discover
+    </a>
     <a href="/" class="sidebar-link {% if request.url.path == '/' %}active{% endif %}">
       <span class="sidebar-icon"><svg class="icon"><use href="#i-home"/></svg></span> Dashboard
     </a>
@@ -210,9 +216,6 @@
     </a>
 
     <div class="sidebar-label">Operations</div>
-    <a href="/scan" class="sidebar-link {% if request.url.path == '/scan' %}active{% endif %}">
-      <span class="sidebar-icon"><svg class="icon"><use href="#i-bolt"/></svg></span> Scan Manager
-    </a>
     <a href="/feeds" class="sidebar-link {% if request.url.path == '/feeds' %}active{% endif %}">
       <span class="sidebar-icon"><svg class="icon"><use href="#i-radio"/></svg></span> Feed Sync
     </a>

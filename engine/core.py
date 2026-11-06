@@ -33,9 +33,9 @@ MASSCAN        = os.getenv("MASSCAN_BIN", "masscan")
 NMAP           = os.getenv("NMAP_BIN", "nmap")
 GEOIP_DB       = os.getenv("GEOIP_DB", "")
 ASN_CSV        = os.getenv("ASN_CSV", "")
-CONCURRENCY    = int(os.getenv("CONCURRENCY", "256"))
-TIMEOUT        = float(os.getenv("TIMEOUT", "3.0"))
-RATE_PPS       = int(os.getenv("RATE_PPS", "2000"))
+CONCURRENCY    = int(os.getenv("CONCURRENCY", "512"))
+TIMEOUT        = float(os.getenv("TIMEOUT", "1.0"))
+RATE_PPS       = int(os.getenv("RATE_PPS", "10000"))
 NVD_CACHE_DIR  = os.getenv("NVD_CACHE", "nvd_cache")
 NVD_FEED_BASE  = "https://github.com/fkie-cad/nvd-json-data-feeds/releases/latest/download"
 KEV_URL        = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
@@ -1076,19 +1076,22 @@ async def discover_asyncio(cidr, ports, nets):
     return await probe_targets(
         (str(ip), p) for ip in net.hosts() if allowed(str(ip), nets) for p in ports)
 
-def discover_masscan(cidr, ports, nets):
+def discover_masscan(cidr, ports, nets, wait: int = 2, rate: int = 0):
+    """SYN-scan cidr:ports via masscan. Returns (ip, port) list, raises on binary error."""
+    rate = rate or RATE_PPS
     try:
-        if subprocess.run([MASSCAN, "--version"],
-                          capture_output=True, timeout=5).returncode != 0:
-            return []
-    except Exception: return []
+        r = subprocess.run([MASSCAN, "--version"], capture_output=True, timeout=5)
+        if r.returncode != 0:
+            raise RuntimeError("masscan --version non-zero")
+    except Exception as exc:
+        raise RuntimeError(f"masscan unavailable: {exc}") from exc
     cmd = [MASSCAN, cidr, "-p", ",".join(map(str, ports)),
-           "--rate", str(RATE_PPS), "-oL", "-", "--wait", "3"]
+           "--rate", str(rate), "-oL", "-", "--wait", str(wait)]
     log.info("masscan: %s", " ".join(cmd))
     try:
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=600).stdout
     except Exception as e:
-        log.warning("masscan: %s", e); return []
+        raise RuntimeError(f"masscan run failed: {e}") from e
     found = []
     for line in out.splitlines():
         p = line.split()
@@ -1639,6 +1642,85 @@ def daemon_status() -> Dict[str, Any]:
     return st
 
 
+# ── Internet Crawl ────────────────────────────────────────────────────────────
+# LCG with period 2^24: visits every possible /24 network exactly once per cycle.
+# Hull-Dobell conditions satisfied: c odd, m=2^24 (power of 2), a≡1 (mod 4).
+_CRAWL_LCG_M: int = 1 << 24          # 16,777,216
+_CRAWL_LCG_A: int = 1_664_525
+_CRAWL_LCG_C: int = 1_013_904_223
+
+# RFC 5735 / RFC 1918 exclusions — never scan these /24s
+_CRAWL_EXCLUDED_CIDRS = [
+    "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
+    "169.254.0.0/16", "172.16.0.0/12", "192.168.0.0/16",
+    "224.0.0.0/4", "240.0.0.0/4",
+]
+_crawl_excluded_cache: Optional[set] = None
+
+
+def _crawl_excluded() -> set:
+    global _crawl_excluded_cache
+    if _crawl_excluded_cache is None:
+        s: set = set()
+        for cidr in _CRAWL_EXCLUDED_CIDRS:
+            net = ipaddress.ip_network(cidr)
+            for sub in net.subnets(new_prefix=24):
+                # 24-bit network ID: top 3 octets
+                s.add(int(sub.network_address) >> 8)
+        _crawl_excluded_cache = s
+    return _crawl_excluded_cache
+
+
+def crawl_lcg_step(state: int) -> int:
+    return (_CRAWL_LCG_A * state + _CRAWL_LCG_C) % _CRAWL_LCG_M
+
+
+def crawl_lcg_to_cidr(state: int) -> Optional[str]:
+    """Return the /24 CIDR for this LCG state, or None if excluded."""
+    if state in _crawl_excluded():
+        return None
+    a = (state >> 16) & 0xFF
+    b = (state >> 8) & 0xFF
+    c = state & 0xFF
+    return f"{a}.{b}.{c}.0/24"
+
+
+def crawl_total_chunks() -> int:
+    return _CRAWL_LCG_M - len(_crawl_excluded())
+
+
+def crawl_load_state() -> Dict[str, Any]:
+    try:
+        conn = db()
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM crawl_state WHERE id=1").fetchone()
+        conn.close()
+        return dict(row) if row else {}
+    except sqlite3.Error:
+        return {}
+
+
+def crawl_save_state(**kwargs) -> None:
+    conn = db()
+    try:
+        exists = conn.execute("SELECT id FROM crawl_state WHERE id=1").fetchone()
+        if exists:
+            sets = ", ".join(f"{k}=?" for k in kwargs)
+            conn.execute(f"UPDATE crawl_state SET {sets} WHERE id=?",
+                         list(kwargs.values()) + [1])
+        else:
+            kwargs.setdefault("id", 1)
+            cols = ", ".join(kwargs.keys())
+            phs = ", ".join("?" * len(kwargs))
+            conn.execute(f"INSERT INTO crawl_state ({cols}) VALUES ({phs})",
+                         list(kwargs.values()))
+        conn.commit()
+    except sqlite3.Error as e:
+        log.warning("crawl_save_state: %s", e)
+    finally:
+        conn.close()
+
+
 def rescan_due(ports: List[int], nets) -> int:
     """Re-probe hosts whose next_scan has passed, in a scan round of their own.
 
@@ -2126,6 +2208,19 @@ CREATE TABLE IF NOT EXISTS daemon_state (
     last_found       INTEGER DEFAULT 0,
     total_found      INTEGER DEFAULT 0,
     last_error       TEXT    DEFAULT ''
+);
+-- Internet crawl state: one singleton row (id=1). LCG cursor enables O(1) resume.
+CREATE TABLE IF NOT EXISTS crawl_state (
+    id           INTEGER PRIMARY KEY CHECK (id = 1),
+    started_at   TEXT,
+    last_chunk   TEXT    DEFAULT '',
+    chunks_done  INTEGER DEFAULT 0,
+    chunks_total INTEGER DEFAULT 0,
+    status       TEXT    DEFAULT 'stopped',
+    scan_name    TEXT    DEFAULT '',
+    ports        TEXT    DEFAULT '',
+    lcg_state    INTEGER DEFAULT 0,
+    lcg_start    INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_hosts_risk   ON hosts(risk_score);
 CREATE INDEX IF NOT EXISTS idx_hosts_ip     ON hosts(ip);
