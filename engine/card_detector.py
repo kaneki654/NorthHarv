@@ -15,7 +15,7 @@ scan_banner(banner: str) -> List[CardFinding]
 
 import re
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List
 
 log = logging.getLogger(__name__)
@@ -58,6 +58,28 @@ _PAN_RE = re.compile(
     r"(?!\d)",
     re.ASCII,
 )
+
+# ---------------------------------------------------------------------------
+# Expiration date regex: MM/YY — valid months (01-12), year 20-29
+# ---------------------------------------------------------------------------
+_EXP_RE = re.compile(
+    r"\b(0[1-9]|1[0-2])/([2-9][0-9])\b",
+    re.ASCII,
+)
+
+# ---------------------------------------------------------------------------
+# CVV regex: 3-4 digits immediately preceded by a card-security keyword
+# (requires keyword context to avoid false-positive 3-digit numbers)
+# ---------------------------------------------------------------------------
+_CVV_CONTEXT_RE = re.compile(
+    r"(?:cvv2?|cvc2?|cv2|cid|security[\s_\-]{0,2}code|card[\s_\-]{0,2}verif\w*)"
+    r"[\s:=_\-]{0,10}"
+    r"(\d{3,4})\b",
+    re.IGNORECASE,
+)
+
+# chars each side of a PAN match to search for correlated exp_date / CVV
+_CONTEXT_WINDOW = 300
 
 # ---------------------------------------------------------------------------
 # Luhn checksum
@@ -173,6 +195,10 @@ class CardFinding:
     issuer: str
     country: str
     funding_type: str     # credit | debit | prepaid | ""
+    exp_date_found: bool = field(default=False)   # expiration date found near this PAN
+    exp_date_masked: str = field(default="")      # "**/**" when found, "" otherwise
+    cvv_found: bool = field(default=False)        # CVV/CVC found near this PAN
+    cvv_masked: str = field(default="")           # "***" / "****" when found, "" otherwise
 
 
 def scan_banner(banner: str) -> List[CardFinding]:
@@ -200,6 +226,19 @@ def scan_banner(banner: str) -> List[CardFinding]:
             if masked in seen:
                 continue
             seen.add(masked)
+
+            # Correlate exp_date and CVV within the context window around this PAN
+            ctx_start = max(0, m.start() - _CONTEXT_WINDOW)
+            ctx_end = min(len(banner), m.end() + _CONTEXT_WINDOW)
+            ctx = banner[ctx_start:ctx_end]
+
+            exp_found = bool(_EXP_RE.search(ctx))
+            exp_masked = "**/**" if exp_found else ""
+
+            cvv_m = _CVV_CONTEXT_RE.search(ctx)
+            cvv_found = cvv_m is not None
+            cvv_masked = ("*" * len(cvv_m.group(1))) if cvv_m else ""
+
             results.append(CardFinding(
                 masked_pan=masked,
                 bin_prefix=digits[:6],
@@ -208,6 +247,10 @@ def scan_banner(banner: str) -> List[CardFinding]:
                 issuer=bin_info.issuer,
                 country=bin_info.country,
                 funding_type=bin_info.funding_type,
+                exp_date_found=exp_found,
+                exp_date_masked=exp_masked,
+                cvv_found=cvv_found,
+                cvv_masked=cvv_masked,
             ))
     except Exception as exc:
         log.debug("card_detector.scan_banner error: %s", exc)

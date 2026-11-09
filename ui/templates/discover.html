@@ -120,6 +120,11 @@
 .d-card-meta { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; margin-top: .45rem; }
 .d-card-country { font-size: .68rem; background: var(--surface-2); padding: .15rem .45rem; border-radius: 20px; color: var(--fg-3); }
 .d-card-time { font-size: .65rem; color: var(--fg-4); margin-left: auto; }
+.d-card-access { display:flex; align-items:center; gap:.35rem; margin-top:.45rem; padding:.3rem .5rem; background:var(--surface-2); border-radius:6px; border:1px solid var(--border); overflow:hidden; }
+.d-card-access-label { font-size:.6rem; font-weight:700; text-transform:uppercase; color:var(--fg-3); white-space:nowrap; letter-spacing:.04em; }
+.d-card-access-url { font-family:var(--font-mono); font-size:.65rem; color:var(--fg-2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:1; min-width:0; }
+.d-card-access-copy { flex-shrink:0; background:none; border:none; cursor:pointer; color:var(--fg-3); padding:.1rem .2rem; border-radius:4px; display:flex; align-items:center; }
+.d-card-access-copy:hover { color:var(--primary); background:var(--surface-3); }
 .d-banner-http    { background: #3b82f6; }
 .d-banner-https   { background: #10b981; }
 .d-banner-ssh     { background: #8b5cf6; }
@@ -208,6 +213,17 @@ function buildCard(h, isNew=false) {
   const svc = h.service_name||h.service||'';
   const prod = [h.product,h.version].filter(Boolean).join(' ')||svc||'—';
   const country = h.country_code||h.country||'';
+  const acc = primaryAccess(h);
+  const accRow = acc ? `
+      <div class="d-card-access" title="${escHtml(acc.url)}">
+        <span class="d-card-access-label">${escHtml(acc.label)}</span>
+        ${acc.cmd
+          ? `<code class="d-card-access-url" style="font-size:.68rem">${escHtml(acc.url)}</code>`
+          : `<span class="d-card-access-url">${escHtml(acc.url)}</span>`}
+        <button class="d-card-access-copy" onclick="copyAccess('${acc.url.replace(/'/g,"\\'")}',event)" title="Copy access path">
+          <svg class="icon" style="width:11px;height:11px"><use href="#i-clipboard"/></svg>
+        </button>
+      </div>` : '';
   return `<a class="d-card${isNew?' d-card-new':''}" href="/host/${encodeURIComponent(h.ip)}">
     <div class="d-card-banner ${bannerClass(svc)}"></div>
     <div class="d-card-body">
@@ -220,7 +236,7 @@ function buildCard(h, isNew=false) {
         ${tagBadges(h)}
         ${country?`<span class="d-card-country">${escHtml(country)}</span>`:''}
         <span class="d-card-time">${relTime(h.last_seen)}</span>
-      </div>
+      </div>${accRow}
     </div>
   </a>`;
 }
@@ -229,21 +245,83 @@ function tagList(h) {
   return (h.tags||'').split(',').filter(Boolean);
 }
 
+// Returns the primary access URL/command for a host based on service + tags
+function primaryAccess(h) {
+  const tags = tagList(h);
+  const svc  = (h.service_name||'').toLowerCase();
+  const port = parseInt(h.port);
+  const ip   = h.ip;
+  const https = svc==='https'||port===443||port===8443;
+  const web   = svc==='http'||svc==='https'||[80,443,8080,8081,8000,8443,8888,9000,8008,8880].includes(port);
+
+  if (tags.includes('rtsp') || svc==='rtsp')
+    // RTSP cannot be opened in browser — show as copyable URL
+    return { label:'RTSP (copy for VLC)', url:`rtsp://${ip}:${port}/`, cmd:true };
+  if (tags.includes('onvif'))
+    return { label:'ONVIF', url:`http://${ip}:${port}/onvif/device_service` };
+  if (tags.includes('camera_confirmed'))
+    return { label:'Camera ✓', url:`${https?'https':'http'}://${ip}:${port}` };
+  if (tags.includes('camera'))
+    return { label:'Camera?', url:`${https?'https':'http'}://${ip}:${port}` };
+  if (tags.includes('admin_panel') || tags.includes('login_panel') || tags.includes('default_creds'))
+    return { label:'Panel', url:`${https?'https':'http'}://${ip}:${port}` };
+  if (tags.includes('open_dir'))
+    return { label:'Dir', url:`${https?'https':'http'}://${ip}:${port}` };
+  if (tags.includes('exposed_docker'))
+    return { label:'Docker', url:`http://${ip}:${port}/v1.41/containers/json` };
+  if (tags.includes('exposed_db')) {
+    const DB = {
+      mongodb:'mongodb://', postgresql:'postgresql://', mariadb:'mysql://',
+      mysql:'mysql://', redis:'redis://', elasticsearch:'http://',
+      couchdb:`http://${ip}:${port}/_utils`, influxdb:'http://',
+      clickhouse:'http://', memcached:`${ip}:`, cassandra:`${ip}:`,
+    };
+    if (svc in DB) {
+      const pref = DB[svc];
+      if (svc==='couchdb') return { label:'CouchDB', url:pref };
+      if (svc==='memcached'||svc==='cassandra') return { label:svc, url:`${pref}${port}` };
+      return { label:svc, url:`${pref}${ip}:${port}` };
+    }
+    if (web) return { label:'DB-web', url:`${https?'https':'http'}://${ip}:${port}` };
+  }
+  if (svc==='ssh')  return { label:'SSH',    url:`ssh root@${ip} -p ${port}` };
+  if (svc==='ftp')  return { label:'FTP',    url:`ftp://${ip}:${port}` };
+  if (svc==='telnet') return { label:'Telnet', url:`telnet ${ip} ${port}` };
+  if (svc==='rdp'||svc==='ms-wbt-server') return { label:'RDP', url:`${ip}:${port}` };
+  if (svc==='vnc')  return { label:'VNC',    url:`vnc://${ip}:${port}` };
+  if (web) return { label:'HTTP', url:`${https?'https':'http'}://${ip}:${port}` };
+  return null;
+}
+
+function copyAccess(text, e) {
+  e.preventDefault(); e.stopPropagation();
+  navigator.clipboard.writeText(text).catch(()=>{
+    const t=document.createElement('textarea'); t.value=text;
+    document.body.appendChild(t); t.select(); document.execCommand('copy'); t.remove();
+  });
+  const btn = e.currentTarget;
+  const orig = btn.innerHTML;
+  btn.innerHTML = '✓'; btn.style.color='var(--success)';
+  setTimeout(()=>{ btn.innerHTML=orig; btn.style.color=''; }, 1200);
+}
+
 function tagBadges(h) {
   const tags = tagList(h);
   if (!tags.length) return '';
   const MAP = {
-    camera:'d-tag-camera', rtsp:'d-tag-rtsp', onvif:'d-tag-onvif',
+    camera:'d-tag-camera', camera_confirmed:'d-tag-camera', rtsp:'d-tag-rtsp', onvif:'d-tag-onvif',
     login_panel:'d-tag-login', admin_panel:'d-tag-admin', open_dir:'d-tag-opendir',
     default_creds:'d-tag-creds', exposed_db:'d-tag-db', exposed_docker:'d-tag-docker',
     exposed_k8s:'d-tag-docker',
   };
   const LABEL = {
-    camera:'📷', rtsp:'📡 RTSP', onvif:'🎥 ONVIF', login_panel:'🔑 Login',
-    admin_panel:'⚙️ Admin', open_dir:'📂 Dir', default_creds:'🚨 Creds',
-    exposed_db:'🗄️ DB', exposed_docker:'🐳 Docker', exposed_k8s:'☸️ K8s',
+    camera_confirmed:'📷 CONFIRMED', camera:'📷 SUSPECTED', rtsp:'📡 RTSP', onvif:'🎥 ONVIF',
+    login_panel:'🔑 Login', admin_panel:'⚙️ Admin', open_dir:'📂 Dir',
+    default_creds:'🚨 Creds', exposed_db:'🗄️ DB', exposed_docker:'🐳 Docker', exposed_k8s:'☸️ K8s',
   };
-  return tags.slice(0,3).map(t =>
+  // Show camera_confirmed instead of camera when both present; skip internal tags
+  const skip = new Set(['camera_confirmed' in LABEL && tags.includes('camera_confirmed') ? 'camera' : '', ...tags.filter(t=>t.startsWith('cam_mfr_'))]);
+  return tags.filter(t => !skip.has(t) && !t.startsWith('cam_mfr_')).slice(0,3).map(t =>
     `<span class="d-tag ${MAP[t]||''}">${LABEL[t]||t}</span>`
   ).join('');
 }

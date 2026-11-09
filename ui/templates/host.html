@@ -259,6 +259,142 @@ function renderCert(tls) {
     </div>`;
 }
 
+/* ── Access paths ─────────────────────────────────────────────────── */
+function copyText(text) {
+  navigator.clipboard.writeText(text).catch(() => {
+    const t = document.createElement('textarea'); t.value = text;
+    document.body.appendChild(t); t.select(); document.execCommand('copy'); t.remove();
+  });
+}
+
+function hostAccessPaths(ip, p) {
+  const tags  = (p.auto_tags||'').split(',').filter(Boolean);
+  const svc   = (p.service_name||'').toLowerCase();
+  const port  = parseInt(p.port);
+  const https = svc==='https'||port===443||port===8443;
+  const web   = svc==='http'||svc==='https'||[80,443,8080,8081,8000,8443,8888,9000,8008,8880].includes(port);
+  const paths = [];
+
+  if (tags.includes('rtsp') || svc==='rtsp') {
+    // RTSP cannot be opened in a browser — provide URL for external media player only
+    paths.push({ label:'RTSP (VLC / ffmpeg / mpv)', url:`rtsp://${ip}:${port}/`, cmd:true });
+  }
+  if (tags.includes('camera')) {
+    if (!tags.includes('rtsp') && !tags.includes('onvif')) {
+      // Web UI on the detected port — only use detected protocol/port, no guessing
+      paths.push({ label:'Camera web UI', url:`${https?'https':'http'}://${ip}:${port}` });
+    }
+    // Do NOT invent an RTSP URL on port 554 when it was not scanned/detected
+  }
+  if (tags.includes('onvif')) {
+    // /onvif/device_service is the standard ONVIF WSDL endpoint
+    paths.push({ label:'ONVIF device service', url:`http://${ip}:${port}/onvif/device_service` });
+  }
+  if (tags.includes('admin_panel') || tags.includes('login_panel') || tags.includes('default_creds')) {
+    paths.push({ label:'Admin/Login panel', url:`${https?'https':'http'}://${ip}:${port}` });
+  }
+  if (tags.includes('open_dir')) {
+    paths.push({ label:'Open directory', url:`${https?'https':'http'}://${ip}:${port}` });
+  }
+  if (tags.includes('exposed_docker')) {
+    paths.push({ label:'Docker containers', url:`http://${ip}:${port}/v1.41/containers/json` });
+    paths.push({ label:'Docker CLI',        url:`DOCKER_HOST=tcp://${ip}:${port} docker ps`, cmd:true });
+  }
+  if (tags.includes('exposed_db')) {
+    const DB_MAP = {
+      mongodb:       { label:'MongoDB',       url:`mongodb://${ip}:${port}`,          cmd:true },
+      postgresql:    { label:'PostgreSQL',    url:`psql -h ${ip} -p ${port}`,          cmd:true },
+      mysql:         { label:'MySQL',         url:`mysql -h ${ip} -P ${port} -u root`, cmd:true },
+      mariadb:       { label:'MariaDB',       url:`mysql -h ${ip} -P ${port} -u root`, cmd:true },
+      redis:         { label:'Redis',         url:`redis-cli -h ${ip} -p ${port}`,     cmd:true },
+      memcached:     { label:'Memcached',     url:`telnet ${ip} ${port}`,              cmd:true },
+      elasticsearch: { label:'Elasticsearch', url:`http://${ip}:${port}` },
+      couchdb:       { label:'CouchDB Fauxton',url:`http://${ip}:${port}/_utils` },
+      influxdb:      { label:'InfluxDB',      url:`http://${ip}:${port}` },
+      clickhouse:    { label:'ClickHouse',    url:`http://${ip}:${port}/play` },
+      cassandra:     { label:'Cassandra',     url:`cqlsh ${ip} ${port}`,               cmd:true },
+      mssql:         { label:'MSSQL',         url:`sqlcmd -S ${ip},${port} -E`,        cmd:true },
+      'ms-sql-s':    { label:'MSSQL',         url:`sqlcmd -S ${ip},${port} -E`,        cmd:true },
+      neo4j:         { label:'Neo4j Browser', url:`http://${ip}:7474` },
+    };
+    if (DB_MAP[svc]) paths.push(DB_MAP[svc]);
+    else if (web) paths.push({ label:'DB web UI', url:`${https?'https':'http'}://${ip}:${port}` });
+  }
+  if (svc==='ssh')  paths.push({ label:'SSH',    url:`ssh root@${ip} -p ${port}`,        cmd:true });
+  if (svc==='ftp')  paths.push({ label:'FTP',    url:`ftp://${ip}:${port}` });
+  if (svc==='telnet') paths.push({ label:'Telnet', url:`telnet ${ip} ${port}`,            cmd:true });
+  if (svc==='rdp'||svc==='ms-wbt-server') paths.push({ label:'RDP', url:`${ip}:${port}`, cmd:true });
+  if (svc==='vnc')  paths.push({ label:'VNC',    url:`vnc://${ip}:${port}` });
+
+  if (!paths.length && web) {
+    paths.push({ label:'Web', url:`${https?'https':'http'}://${ip}:${port}` });
+  }
+  return paths;
+}
+
+function hostAccessBlock(ip, p) {
+  const paths = hostAccessPaths(ip, p);
+  if (!paths.length) return '';
+  const rows = paths.map(path => {
+    const isUrl = path.url.startsWith('http://') || path.url.startsWith('https://') || path.url.startsWith('rtsp://') || path.url.startsWith('ftp://') || path.url.startsWith('vnc://');
+    const val = isUrl && !path.cmd
+      ? `<a class="fact-val text-mono access-link" href="${escHtml(path.url)}" target="_blank" rel="noopener noreferrer">${escHtml(path.url)}</a>`
+      : `<code class="fact-val text-mono access-cmd">${escHtml(path.url)}</code>`;
+    return `<div class="fact-row access-fact-row">
+      <span class="fact-key">${escHtml(path.label)}</span>
+      <span class="access-val-wrap">${val}
+        <button class="access-copy-btn" onclick="copyText('${path.url.replace(/'/g,"\\'")}'); this.textContent='✓'; setTimeout(()=>this.textContent='⎘',1200);" title="Copy">⎘</button>
+      </span>
+    </div>`;
+  }).join('');
+  return `<div class="access-block mb-3">
+    <div class="access-block-title">${icon('i-link')} Access paths</div>
+    ${rows}
+  </div>`;
+}
+
+
+/* ── Camera info block ────────────────────────────────────────────────── */
+function cameraInfoBlock(p) {
+  const tags = (p.auto_tags||'').split(',').filter(Boolean);
+  const isCamera = tags.includes('camera');
+  if (!isCamera) return '';
+
+  const confirmed  = tags.includes('camera_confirmed');
+  const hasRtsp    = tags.includes('rtsp');
+  const hasOnvif   = tags.includes('onvif');
+  const svc        = (p.service_name||'').toLowerCase();
+  const hasHttp    = svc==='http'||svc==='https'||[80,443,8080,8081,8000,8443,8888,9000].includes(parseInt(p.port));
+
+  // Extract manufacturer from cam_mfr_* tag
+  const mfrTag = tags.find(t => t.startsWith('cam_mfr_'));
+  const mfr = mfrTag
+    ? mfrTag.replace('cam_mfr_', '').replace(/_/g,' ').replace(/\w/g,c=>c.toUpperCase())
+    : null;
+
+  const statusBadge = confirmed
+    ? `<span style="font-size:.7rem;font-weight:700;padding:.15rem .5rem;border-radius:4px;background:#10b98122;color:#10b981;border:1px solid #10b98144">CONFIRMED</span>`
+    : `<span style="font-size:.7rem;font-weight:700;padding:.15rem .5rem;border-radius:4px;background:#f59e0b22;color:#f59e0b;border:1px solid #f59e0b44">SUSPECTED</span>`;
+
+  const proto = [
+    hasRtsp  ? `<span class="badge badge-info">RTSP</span>` : '',
+    hasOnvif ? `<span class="badge badge-info">ONVIF</span>` : '',
+    hasHttp  ? `<span class="badge badge-info">${svc==='https'||[443,8443].includes(parseInt(p.port))?'HTTPS':'HTTP'}</span>` : '',
+  ].filter(Boolean).join(' ');
+
+  const rtspNote = hasRtsp
+    ? `<div class="fact-row"><span class="fact-key">RTSP note</span><span class="fact-val" style="color:var(--fg-dim);font-size:.8rem">RTSP streams cannot play in a browser — use VLC, ffmpeg, or mpv with the URL below.</span></div>`
+    : '';
+
+  return `<div class="access-block mb-3" style="border-left:3px solid #10b981">
+    <div class="access-block-title">${icon('i-camera')} Camera Detection</div>
+    <div class="fact-row"><span class="fact-key">Status</span><span class="fact-val">${statusBadge}</span></div>
+    ${mfr ? `<div class="fact-row"><span class="fact-key">Manufacturer</span><span class="fact-val">${escHtml(mfr)}</span></div>` : ''}
+    <div class="fact-row"><span class="fact-key">Protocols</span><span class="fact-val">${proto||'—'}</span></div>
+    ${rtspNote}
+  </div>`;
+}
+
 /* ── One port card ────────────────────────────────────────────────── */
 function portCard(p, idx) {
   const tls = parseJson(p.tls_json);
@@ -299,6 +435,8 @@ function portCard(p, idx) {
       </div>
 
       <div class="port-card-body">
+        ${cameraInfoBlock(p)}
+        ${hostAccessBlock(HOST_IP, p)}
         ${techList.length ? `
           <div class="flex gap-1 mb-3" style="flex-wrap:wrap">
             ${techList.map(t => `<a class="tech-chip" href="/search?q=${encodeURIComponent('tech:' + t)}">${icon('i-package')} ${escHtml(t)}</a>`).join('')}

@@ -42,9 +42,11 @@ MASSCAN        = os.getenv("MASSCAN_BIN", "masscan")
 NMAP           = os.getenv("NMAP_BIN", "nmap")
 GEOIP_DB       = os.getenv("GEOIP_DB", "")
 ASN_CSV        = os.getenv("ASN_CSV", "")
+# Default offline geo CSV — auto-downloaded on first backfill_geo() call
+_DEFAULT_GEO_CSV = str(Path(__file__).parent.parent / "ip2asn.csv")
 CONCURRENCY    = int(os.getenv("CONCURRENCY", "512"))
-TIMEOUT        = float(os.getenv("TIMEOUT", "1.0"))
-RATE_PPS       = int(os.getenv("RATE_PPS", "10000"))
+TIMEOUT        = float(os.getenv("TIMEOUT", "2.0"))
+RATE_PPS       = int(os.getenv("RATE_PPS", "100000"))
 NVD_CACHE_DIR  = os.getenv("NVD_CACHE", "nvd_cache")
 NVD_FEED_BASE  = "https://github.com/fkie-cad/nvd-json-data-feeds/releases/latest/download"
 KEV_URL        = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
@@ -594,6 +596,111 @@ def grab_banner(ip: str, port: int) -> Tuple[str, Optional[TLSInfo]]:
 # ============================================================================
 # GEO / ASN
 # ============================================================================
+# ISO 3166-1 alpha-2 → country name (all continents)
+_ISO_NAMES: dict[str, str] = {
+    "AF":"Afghanistan","AX":"Åland Islands","AL":"Albania","DZ":"Algeria","AS":"American Samoa",
+    "AD":"Andorra","AO":"Angola","AI":"Anguilla","AQ":"Antarctica","AG":"Antigua and Barbuda",
+    "AR":"Argentina","AM":"Armenia","AW":"Aruba","AU":"Australia","AT":"Austria",
+    "AZ":"Azerbaijan","BS":"Bahamas","BH":"Bahrain","BD":"Bangladesh","BB":"Barbados",
+    "BY":"Belarus","BE":"Belgium","BZ":"Belize","BJ":"Benin","BM":"Bermuda",
+    "BT":"Bhutan","BO":"Bolivia","BQ":"Bonaire","BA":"Bosnia and Herzegovina","BW":"Botswana",
+    "BV":"Bouvet Island","BR":"Brazil","IO":"British Indian Ocean Territory","BN":"Brunei",
+    "BG":"Bulgaria","BF":"Burkina Faso","BI":"Burundi","CV":"Cabo Verde","KH":"Cambodia",
+    "CM":"Cameroon","CA":"Canada","KY":"Cayman Islands","CF":"Central African Republic",
+    "TD":"Chad","CL":"Chile","CN":"China","CX":"Christmas Island","CC":"Cocos Islands",
+    "CO":"Colombia","KM":"Comoros","CD":"Congo (DRC)","CG":"Congo","CK":"Cook Islands",
+    "CR":"Costa Rica","CI":"Côte d'Ivoire","HR":"Croatia","CU":"Cuba","CW":"Curaçao",
+    "CY":"Cyprus","CZ":"Czechia","DK":"Denmark","DJ":"Djibouti","DM":"Dominica",
+    "DO":"Dominican Republic","EC":"Ecuador","EG":"Egypt","SV":"El Salvador","GQ":"Equatorial Guinea",
+    "ER":"Eritrea","EE":"Estonia","SZ":"Eswatini","ET":"Ethiopia","FK":"Falkland Islands",
+    "FO":"Faroe Islands","FJ":"Fiji","FI":"Finland","FR":"France","GF":"French Guiana",
+    "PF":"French Polynesia","TF":"French Southern Territories","GA":"Gabon","GM":"Gambia",
+    "GE":"Georgia","DE":"Germany","GH":"Ghana","GI":"Gibraltar","GR":"Greece",
+    "GL":"Greenland","GD":"Grenada","GP":"Guadeloupe","GU":"Guam","GT":"Guatemala",
+    "GG":"Guernsey","GN":"Guinea","GW":"Guinea-Bissau","GY":"Guyana","HT":"Haiti",
+    "HM":"Heard Island","VA":"Holy See","HN":"Honduras","HK":"Hong Kong","HU":"Hungary",
+    "IS":"Iceland","IN":"India","ID":"Indonesia","IR":"Iran","IQ":"Iraq",
+    "IE":"Ireland","IM":"Isle of Man","IL":"Israel","IT":"Italy","JM":"Jamaica",
+    "JP":"Japan","JE":"Jersey","JO":"Jordan","KZ":"Kazakhstan","KE":"Kenya",
+    "KI":"Kiribati","KP":"North Korea","KR":"South Korea","KW":"Kuwait","KG":"Kyrgyzstan",
+    "LA":"Laos","LV":"Latvia","LB":"Lebanon","LS":"Lesotho","LR":"Liberia",
+    "LY":"Libya","LI":"Liechtenstein","LT":"Lithuania","LU":"Luxembourg","MO":"Macao",
+    "MG":"Madagascar","MW":"Malawi","MY":"Malaysia","MV":"Maldives","ML":"Mali",
+    "MT":"Malta","MH":"Marshall Islands","MQ":"Martinique","MR":"Mauritania","MU":"Mauritius",
+    "YT":"Mayotte","MX":"Mexico","FM":"Micronesia","MD":"Moldova","MC":"Monaco",
+    "MN":"Mongolia","ME":"Montenegro","MS":"Montserrat","MA":"Morocco","MZ":"Mozambique",
+    "MM":"Myanmar","NA":"Namibia","NR":"Nauru","NP":"Nepal","NL":"Netherlands",
+    "NC":"New Caledonia","NZ":"New Zealand","NI":"Nicaragua","NE":"Niger","NG":"Nigeria",
+    "NU":"Niue","NF":"Norfolk Island","MK":"North Macedonia","MP":"Northern Mariana Islands",
+    "NO":"Norway","OM":"Oman","PK":"Pakistan","PW":"Palau","PS":"Palestine",
+    "PA":"Panama","PG":"Papua New Guinea","PY":"Paraguay","PE":"Peru","PH":"Philippines",
+    "PN":"Pitcairn","PL":"Poland","PT":"Portugal","PR":"Puerto Rico","QA":"Qatar",
+    "RE":"Réunion","RO":"Romania","RU":"Russia","RW":"Rwanda","BL":"Saint Barthélemy",
+    "SH":"Saint Helena","KN":"Saint Kitts and Nevis","LC":"Saint Lucia","MF":"Saint Martin",
+    "PM":"Saint Pierre and Miquelon","VC":"Saint Vincent and the Grenadines","WS":"Samoa",
+    "SM":"San Marino","ST":"Sao Tome and Principe","SA":"Saudi Arabia","SN":"Senegal",
+    "RS":"Serbia","SC":"Seychelles","SL":"Sierra Leone","SG":"Singapore","SX":"Sint Maarten",
+    "SK":"Slovakia","SI":"Slovenia","SB":"Solomon Islands","SO":"Somalia","ZA":"South Africa",
+    "GS":"South Georgia","SS":"South Sudan","ES":"Spain","LK":"Sri Lanka","SD":"Sudan",
+    "SR":"Suriname","SJ":"Svalbard and Jan Mayen","SE":"Sweden","CH":"Switzerland",
+    "SY":"Syria","TW":"Taiwan","TJ":"Tajikistan","TZ":"Tanzania","TH":"Thailand",
+    "TL":"Timor-Leste","TG":"Togo","TK":"Tokelau","TO":"Tonga","TT":"Trinidad and Tobago",
+    "TN":"Tunisia","TR":"Turkey","TM":"Turkmenistan","TC":"Turks and Caicos Islands",
+    "TV":"Tuvalu","UG":"Uganda","UA":"Ukraine","AE":"United Arab Emirates",
+    "GB":"United Kingdom","US":"United States","UM":"US Minor Outlying Islands",
+    "UY":"Uruguay","UZ":"Uzbekistan","VU":"Vanuatu","VE":"Venezuela","VN":"Vietnam",
+    "VG":"British Virgin Islands","VI":"US Virgin Islands","WF":"Wallis and Futuna",
+    "EH":"Western Sahara","YE":"Yemen","ZM":"Zambia","ZW":"Zimbabwe",
+}
+
+
+def _download_ip2asn(dest: str) -> bool:
+    """Download iptoasn.com IPv4 TSV (free, no auth) and convert to our CSV format.
+
+    Output CSV columns: start_int,end_int,country_code,country_name,org,asn
+    """
+    url = "https://iptoasn.com/data/ip2asn-v4.tsv.gz"
+    tmp = dest + ".download"
+    try:
+        log.info("geo: downloading ip2asn from %s", url)
+        req = urllib.request.Request(url, headers={"User-Agent": "NorthHarv/1.0 (geo-db)"})
+        with urllib.request.urlopen(req, timeout=180) as resp, open(tmp, "wb") as f:
+            while True:
+                chunk = resp.read(1 << 20)
+                if not chunk:
+                    break
+                f.write(chunk)
+        count = 0
+        with gzip.open(tmp, "rt", encoding="utf-8", errors="replace") as fin, \
+             open(dest, "w", encoding="utf-8") as fout:
+            for line in fin:
+                p = line.rstrip("\n").split("\t")
+                if len(p) < 5:
+                    continue
+                cc = p[3].strip().upper()
+                if not cc or cc in ("NONE", "-", "ZZ", "XX"):
+                    continue
+                name = _ISO_NAMES.get(cc, cc)
+                org = p[4].strip().replace(",", " ")
+                try:
+                    s = int(ipaddress.ip_address(p[0]))
+                    e = int(ipaddress.ip_address(p[1]))
+                    fout.write(f"{s},{e},{cc},{name},{org},{int(p[2])}\n")
+                    count += 1
+                except (ValueError, IndexError):
+                    continue
+        os.unlink(tmp)
+        log.info("geo: wrote %d IP ranges to %s", count, dest)
+        return True
+    except Exception as exc:
+        log.warning("geo: download failed — %s", exc)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return False
+
+
 class GeoDB:
     def __init__(self):
         self._mmdb = None
@@ -603,21 +710,29 @@ class GeoDB:
                 import geoip2.database
                 self._mmdb = geoip2.database.Reader(GEOIP_DB)
             except Exception as e: log.warning("mmdb: %s", e)
-        if ASN_CSV and os.path.exists(ASN_CSV):
-            try:
-                rows = []
-                for line in open(ASN_CSV):
-                    p = line.strip().split(",")
-                    if len(p) < 6: continue
-                    try: rows.append((int(p[0]), int(p[1]), p[2].upper(),
-                                     p[3], p[4], int(p[5])))
-                    except Exception: continue
-                rows.sort()
-                self._r = rows
-                self._s = [r[0] for r in rows]
-                self._e = [r[1] for r in rows]
-                log.info("geo CSV: %d ranges", len(rows))
-            except Exception as e: log.warning("geo CSV: %s", e)
+        csv_path = ASN_CSV if (ASN_CSV and os.path.exists(ASN_CSV)) else (
+            _DEFAULT_GEO_CSV if os.path.exists(_DEFAULT_GEO_CSV) else None)
+        if csv_path:
+            self._load_csv(csv_path)
+
+    def _load_csv(self, path: str) -> int:
+        try:
+            rows = []
+            for line in open(path):
+                p = line.strip().split(",")
+                if len(p) < 6: continue
+                try: rows.append((int(p[0]), int(p[1]), p[2].upper(),
+                                 p[3], p[4], int(p[5])))
+                except Exception: continue
+            rows.sort()
+            self._r = rows
+            self._s = [r[0] for r in rows]
+            self._e = [r[1] for r in rows]
+            log.info("geo CSV: %d ranges from %s", len(rows), path)
+            return len(rows)
+        except Exception as e:
+            log.warning("geo CSV: %s", e)
+            return 0
 
     def lookup(self, ip: str) -> Geo:
         g = Geo()
@@ -1054,11 +1169,16 @@ def store_pci_findings(svc, findings: list) -> int:
             cur = conn.execute(
                 """INSERT OR IGNORE INTO pci_findings
                    (ip, port, service_name, detected_at, card_network, luhn_valid,
-                    masked_pan, bin_prefix, issuer, country, funding_type)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    masked_pan, bin_prefix, issuer, country, funding_type,
+                    exp_date_exposed, exp_date_masked, cvv_exposed, cvv_masked)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (svc.ip, svc.port, svc.service_name or "", now,
                  f.card_network, int(f.luhn_valid), f.masked_pan,
-                 f.bin_prefix, f.issuer, f.country, f.funding_type))
+                 f.bin_prefix, f.issuer, f.country, f.funding_type,
+                 int(getattr(f, "exp_date_found", False)),
+                 getattr(f, "exp_date_masked", ""),
+                 int(getattr(f, "cvv_found", False)),
+                 getattr(f, "cvv_masked", "")))
             inserted += cur.rowcount
         conn.commit()
     except sqlite3.Error as exc:
@@ -1193,14 +1313,19 @@ async def enrich_and_store(ip: str, port: int, round_id: int):
     await asyncio.to_thread(store_service, svc)
 
     # PCI banner scan — offline, zero-latency, never retains full PANs
-    if _cd_scan_banner is not None and svc.banner:
+    if _cd_scan_banner is None:
+        log.debug("pci: card_detector unavailable, skipping %s:%s", svc.ip, svc.port)
+    elif not svc.banner:
+        log.debug("pci: no banner for %s:%s — skipping", svc.ip, svc.port)
+    else:
         try:
             _findings = _cd_scan_banner(svc.banner)
+            log.debug("pci: %s:%s — %d candidate(s) from banner scan", svc.ip, svc.port, len(_findings))
             if _findings:
-                await asyncio.to_thread(store_pci_findings, svc, _findings)
-                log.info("pci: %s:%s — %d candidate(s) stored", svc.ip, svc.port, len(_findings))
+                _n = await asyncio.to_thread(store_pci_findings, svc, _findings)
+                log.info("pci: %s:%s — %d candidate(s) stored (new: %d)", svc.ip, svc.port, len(_findings), _n)
         except Exception as _exc:
-            log.debug("pci scan error %s:%s — %s", svc.ip, svc.port, _exc)
+            log.warning("pci scan error %s:%s — %s", svc.ip, svc.port, _exc)
 
     return svc
 
@@ -2214,19 +2339,54 @@ from engine import signatures as SIG
 # ── Schema migrations ───────────────────────────────────────────────────────
 # column name -> DDL type/default. Applied additively; existing data is kept.
 # ── Auto-tag detection ──────────────────────────────────────────────────────
-_CAMERA_PORTS = frozenset({554, 8554, 10554, 8181, 34567, 37777})
+# Ports where RTSP is likely but not certain — require banner evidence too
+_CAMERA_PORTS = frozenset({554, 8554, 10554})
 
-_CAMERA_KEYWORDS = frozenset({
-    "hikvision", "dahua", "axis communications", "vivotek", "foscam",
-    "amcrest", "reolink", "ubiquiti", "hanwha", "bosch security", "pelco",
-    "uniview", "milesight", "tiandy", "geovision", "mobotix", "avigilon",
-    "flir", "arecont", "vstarcam", "lorex", "annke", "zosi",
-    "ip camera", "ipcamera", "net camera", "netcam", "webcam", "webeye",
-    "netwave ip", "nvr", "dvr", "cctv", "video surveillance",
-    "surveillance camera", "security camera", "onvif", "rtsp/",
-    "stream.mjpeg", "/videostream", "/video.cgi", "/snapshot.cgi",
-    "mjpeg", "mjpg-streamer",
+# Known camera manufacturers — key: substring to match, value: display name
+_CAMERA_MFR_MAP = {
+    "hikvision":           "Hikvision",
+    "dahua":               "Dahua",
+    "axis communications": "Axis",
+    "vivotek":             "Vivotek",
+    "foscam":              "Foscam",
+    "amcrest":             "Amcrest",
+    "reolink":             "Reolink",
+    "ubiquiti":            "Ubiquiti",
+    "hanwha":              "Hanwha",
+    "bosch security":      "Bosch",
+    "pelco":               "Pelco",
+    "uniview":             "Uniview",
+    "milesight":           "Milesight",
+    "tiandy":              "Tiandy",
+    "geovision":           "GeoVision",
+    "mobotix":             "Mobotix",
+    "avigilon":            "Avigilon",
+    "flir":                "FLIR",
+    "arecont":             "Arecont",
+    "vstarcam":            "VStarCam",
+    "lorex":               "Lorex",
+    "annke":               "ANNKE",
+    "zosi":                "ZOSI",
+    "netwave ip":          "Netwave",
+    "mjpg-streamer":       "mjpg-streamer",
+}
+
+# Strong fingerprints unique to camera firmware — high confidence
+_CAMERA_STRONG = frozenset({
+    "rtsp/", "/onvif/", "stream.mjpeg", "/videostream.cgi", "/video.cgi",
+    "/snapshot.cgi", "mjpeg", "mjpg-streamer", "/cgi-bin/viewer",
+    "/cgi-bin/net_jpeg.cgi", "webeye", "netwave ip",
 })
+
+# Generic camera keywords — lower confidence on their own
+_CAMERA_WEAK = frozenset({
+    "ip camera", "ipcamera", "net camera", "netcam", "webcam",
+    "nvr", "dvr", "cctv", "video surveillance",
+    "surveillance camera", "security camera",
+})
+
+# Keep old name as alias so backfill_tags won't break if referenced elsewhere
+_CAMERA_KEYWORDS = _CAMERA_STRONG | _CAMERA_WEAK
 
 _LOGIN_TITLE_WORDS = frozenset({
     "login", "log in", "sign in", "signin", "logon", "log-in",
@@ -2272,14 +2432,33 @@ def compute_auto_tags(port: int, service_name: str, product: str,
     full  = f"{prod} {ban} {title} {hdrs}"
 
     # ── RTSP / camera ──────────────────────────────────────────────────────
-    if port in _CAMERA_PORTS or sn == "rtsp" or "rtsp/" in ban:
+    # RTSP: banner evidence is required for confirmed RTSP; port-only is suspected
+    rtsp_banner = sn == "rtsp" or "rtsp/" in ban
+    rtsp_port   = port in _CAMERA_PORTS
+
+    if rtsp_banner or rtsp_port:
         tags.add("rtsp")
-    if "onvif" in full:
+
+    # ONVIF: specific protocol mention is a confirmed signal
+    if "onvif" in full or "/onvif/" in full:
         tags.add("onvif")
-    if any(kw in full for kw in _CAMERA_KEYWORDS):
+
+    # Manufacturer detection → strong confirmation signal
+    for kw, mfr_name in _CAMERA_MFR_MAP.items():
+        if kw in full:
+            tags.add(f"cam_mfr_{mfr_name.lower().replace(' ', '_').replace('-', '_')}")
+            break  # first (most specific) match wins
+
+    # Confidence classification
+    strong_hit  = any(kw in full for kw in _CAMERA_STRONG)
+    weak_hit    = any(kw in full for kw in _CAMERA_WEAK)
+    mfr_hit     = any(t.startswith("cam_mfr_") for t in tags)
+    confirmed   = rtsp_banner or "onvif" in tags or mfr_hit or strong_hit
+
+    if confirmed or weak_hit or rtsp_port:
         tags.add("camera")
-    if "rtsp" in tags or "onvif" in tags:
-        tags.add("camera")
+    if confirmed:
+        tags.add("camera_confirmed")
 
     # ── Open directory listing ─────────────────────────────────────────────
     if "index of /" in title or "directory listing" in title or "parent directory" in ban:
@@ -2372,6 +2551,205 @@ def backfill_tags() -> dict:
     return {"inspected": total, "updated": updated, "per_tag": per_tag}
 
 
+def backfill_pci() -> dict:
+    """Scan every existing host banner for PCI patterns.
+
+    Uses INSERT OR IGNORE so duplicate (ip, port, masked_pan) rows are silently skipped.
+    Safe to call at startup; logs a full diagnostic summary.
+    Returns counts: inspected, candidates_found, findings_inserted, hosts_with_findings.
+    """
+    if _cd_scan_banner is None:
+        log.warning("backfill_pci: card_detector module not available — skipping")
+        return {"inspected": 0, "candidates_found": 0, "findings_inserted": 0, "hosts_with_findings": 0}
+
+    conn = db()
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            "SELECT ip, port, service_name, banner FROM hosts "
+            "WHERE banner IS NOT NULL AND banner != '' ORDER BY last_seen DESC"
+        ).fetchall()
+        pre_count = conn.execute("SELECT COUNT(*) FROM pci_findings").fetchone()[0]
+    except Exception as exc:
+        log.warning("backfill_pci: query error: %s", exc)
+        conn.close()
+        return {"inspected": 0, "candidates_found": 0, "findings_inserted": 0, "hosts_with_findings": 0}
+
+    total = len(rows)
+    candidates_found = 0
+    hosts_with_findings = 0
+    now = datetime.now(timezone.utc).isoformat()
+    log.info("backfill_pci: starting — inspecting %d hosts with banners", total)
+
+    batch: list[tuple] = []
+    BATCH_SIZE = 500
+
+    def _flush(b: list) -> None:
+        if not b:
+            return
+        try:
+            conn.executemany(
+                "INSERT OR IGNORE INTO pci_findings "
+                "(ip, port, service_name, detected_at, card_network, luhn_valid, "
+                "masked_pan, bin_prefix, issuer, country, funding_type, "
+                "exp_date_exposed, exp_date_masked, cvv_exposed, cvv_masked) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                b,
+            )
+            conn.commit()
+        except sqlite3.Error as exc:
+            log.warning("backfill_pci: batch insert error: %s", exc)
+
+    for r in rows:
+        ip = r["ip"]; port = r["port"]; svc = r["service_name"] or ""; banner = r["banner"]
+        try:
+            findings = _cd_scan_banner(banner)
+        except Exception as exc:
+            log.debug("backfill_pci: scan_banner error %s:%s — %s", ip, port, exc)
+            continue
+        if not findings:
+            continue
+        log.info(
+            "backfill_pci: %s:%s svc=%s — %d candidate(s): %s",
+            ip, port, svc, len(findings),
+            [f.masked_pan for f in findings],
+        )
+        candidates_found += len(findings)
+        hosts_with_findings += 1
+        for f in findings:
+            batch.append((
+                ip, port, svc, now, f.card_network, int(f.luhn_valid),
+                f.masked_pan, f.bin_prefix, f.issuer, f.country, f.funding_type,
+                int(getattr(f, "exp_date_found", False)),
+                getattr(f, "exp_date_masked", ""),
+                int(getattr(f, "cvv_found", False)),
+                getattr(f, "cvv_masked", ""),
+            ))
+        if len(batch) >= BATCH_SIZE:
+            _flush(batch)
+            batch = []
+
+    _flush(batch)
+
+    try:
+        post_count = conn.execute("SELECT COUNT(*) FROM pci_findings").fetchone()[0]
+        findings_inserted = post_count - pre_count
+    except Exception:
+        findings_inserted = -1
+    finally:
+        conn.close()
+
+    log.info(
+        "backfill_pci: done — inspected=%d candidates_found=%d findings_inserted=%d hosts_with_findings=%d",
+        total, candidates_found, findings_inserted, hosts_with_findings,
+    )
+    return {
+        "inspected": total,
+        "candidates_found": candidates_found,
+        "findings_inserted": findings_inserted,
+        "hosts_with_findings": hosts_with_findings,
+    }
+
+
+def backfill_geo() -> dict:
+    """Download iptoasn.com dataset if needed, reload GeoDB, then update all hosts with null country.
+
+    Safe to call at startup; idempotent — only downloads if the CSV file doesn't exist yet.
+    Returns counts: hosts_inspected, hosts_updated.
+    """
+    global GEO
+    csv_path = _DEFAULT_GEO_CSV
+
+    # Download only if the file doesn't exist yet (or is empty)
+    if not os.path.exists(csv_path) or os.path.getsize(csv_path) < 1024:
+        log.info("backfill_geo: CSV not found, downloading ip2asn dataset…")
+        ok = _download_ip2asn(csv_path)
+        if not ok:
+            log.warning("backfill_geo: download failed, cannot backfill geo data")
+            return {"hosts_inspected": 0, "hosts_updated": 0, "error": "download_failed"}
+    else:
+        log.info("backfill_geo: using existing CSV at %s", csv_path)
+
+    # Reload GeoDB with the new CSV
+    if GEO is None:
+        GEO = GeoDB()
+    else:
+        n = GEO._load_csv(csv_path)
+        log.info("backfill_geo: reloaded GeoDB with %d ranges", n)
+
+    if not GEO._r:
+        log.warning("backfill_geo: GeoDB has no ranges after reload, aborting")
+        return {"hosts_inspected": 0, "hosts_updated": 0, "error": "no_ranges"}
+
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=60)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=30000")
+    conn.execute("PRAGMA journal_mode=WAL")
+    try:
+        rows = conn.execute(
+            "SELECT ip, port, geo_json FROM hosts "
+            "WHERE json_extract(geo_json,'$.country_code') IS NULL "
+            "   OR json_extract(geo_json,'$.country_code') = '' "
+            "ORDER BY ip"
+        ).fetchall()
+    except Exception as exc:
+        log.warning("backfill_geo: query error: %s", exc)
+        conn.close()
+        return {"hosts_inspected": 0, "hosts_updated": 0, "error": str(exc)}
+
+    total = len(rows)
+    updated = 0
+    BATCH = 500
+    log.info("backfill_geo: updating %d hosts with null country", total)
+
+    batch: list[tuple] = []
+
+    def _flush(b: list) -> None:
+        if not b:
+            return
+        try:
+            conn.executemany(
+                "UPDATE hosts SET geo_json=? WHERE ip=? AND port=?", b
+            )
+            conn.commit()
+        except sqlite3.Error as exc:
+            log.warning("backfill_geo: batch update error: %s", exc)
+
+    for r in rows:
+        ip = r["ip"]; port = r["port"]
+        try:
+            geo = GEO.lookup(ip)
+            if not geo.country_code:
+                continue
+            existing = {}
+            try:
+                existing = json.loads(r["geo_json"] or "{}")
+            except Exception:
+                pass
+            existing.update({
+                "country": geo.country,
+                "country_code": geo.country_code,
+                "asn": geo.asn,
+                "org": geo.org,
+            })
+            if not existing.get("latitude") and geo.latitude:
+                existing["latitude"] = geo.latitude
+                existing["longitude"] = geo.longitude
+            batch.append((json.dumps(existing), ip, port))
+            updated += 1
+        except Exception as exc:
+            log.debug("backfill_geo: lookup error %s — %s", ip, exc)
+        if len(batch) >= BATCH:
+            _flush(batch)
+            batch = []
+
+    _flush(batch)
+    conn.close()
+
+    log.info("backfill_geo: done — inspected=%d updated=%d", total, updated)
+    return {"hosts_inspected": total, "hosts_updated": updated}
+
+
 HOST_MIGRATIONS = {
     "risk_score":     "INTEGER DEFAULT 0",
     "techs":          "TEXT DEFAULT ''",
@@ -2457,9 +2835,13 @@ CREATE TABLE IF NOT EXISTS pci_findings (
     luhn_valid   INTEGER DEFAULT 0,
     masked_pan   TEXT    NOT NULL,
     bin_prefix   TEXT    DEFAULT '',
-    issuer       TEXT    DEFAULT '',
-    country      TEXT    DEFAULT '',
-    funding_type TEXT    DEFAULT '',
+    issuer            TEXT    DEFAULT '',
+    country           TEXT    DEFAULT '',
+    funding_type      TEXT    DEFAULT '',
+    exp_date_exposed  INTEGER DEFAULT 0,
+    exp_date_masked   TEXT    DEFAULT '',
+    cvv_exposed       INTEGER DEFAULT 0,
+    cvv_masked        TEXT    DEFAULT '',
     UNIQUE (ip, port, masked_pan)
 );
 CREATE INDEX IF NOT EXISTS idx_pci_ip      ON pci_findings(ip);

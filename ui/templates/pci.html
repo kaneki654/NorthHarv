@@ -11,11 +11,13 @@
 </div>
 
 <!-- Stats row -->
-<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:1.2rem">
+<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:14px;margin-bottom:1.2rem">
   <div class="stat-tile"><div class="st-val" id="kTotal">—</div><div class="st-lbl">Total Findings</div></div>
   <div class="stat-tile"><div class="st-val" id="kValid">—</div><div class="st-lbl">Luhn Valid</div></div>
   <div class="stat-tile"><div class="st-val" id="kNets">—</div><div class="st-lbl">Networks</div></div>
   <div class="stat-tile"><div class="st-val" id="kHosts">—</div><div class="st-lbl">Unique Hosts</div></div>
+  <div class="stat-tile"><div class="st-val" id="kExp">—</div><div class="st-lbl">Exp Date Hits</div></div>
+  <div class="stat-tile"><div class="st-val" id="kCvv">—</div><div class="st-lbl">CVV Hits</div></div>
 </div>
 
 <!-- Filters -->
@@ -38,7 +40,10 @@
       <option value="0">Luhn invalid</option>
     </select>
     <span class="text-sm" style="color:var(--fg-dim)" id="pciCount">— findings</span>
-    <button class="btn btn-sm" style="margin-left:auto" onclick="loadMore()">Load more</button>
+    <div style="margin-left:auto;display:flex;gap:.5rem">
+      <button class="btn btn-sm" id="backfillBtn" onclick="triggerBackfill()">Backfill scan</button>
+      <button class="btn btn-sm" onclick="loadMore()">Load more</button>
+    </div>
   </div>
 </div>
 
@@ -48,19 +53,21 @@
     <table class="data-table" id="pciTable">
       <thead>
         <tr>
-          <th>Masked PAN</th>
-          <th>Network</th>
-          <th>Luhn</th>
+          <th class="sortable" data-col="masked_pan" onclick="sortBy('masked_pan')">Masked PAN <span class="sort-arrow" id="arr-masked_pan"></span></th>
+          <th class="sortable" data-col="card_network" onclick="sortBy('card_network')">Network <span class="sort-arrow" id="arr-card_network"></span></th>
+          <th class="sortable" data-col="luhn_valid" onclick="sortBy('luhn_valid')">Luhn <span class="sort-arrow" id="arr-luhn_valid"></span></th>
+          <th class="sortable" data-col="exp_date_exposed" onclick="sortBy('exp_date_exposed')">Exp Date <span class="sort-arrow" id="arr-exp_date_exposed"></span></th>
+          <th class="sortable" data-col="cvv_exposed" onclick="sortBy('cvv_exposed')">CVV <span class="sort-arrow" id="arr-cvv_exposed"></span></th>
           <th>Issuer</th>
           <th>Country</th>
           <th>Funding</th>
-          <th>Source Host</th>
+          <th class="sortable" data-col="ip" onclick="sortBy('ip')">Source Host <span class="sort-arrow" id="arr-ip"></span></th>
           <th>Service</th>
-          <th>Detected</th>
+          <th class="sortable" data-col="detected_at" onclick="sortBy('detected_at')">Detected <span class="sort-arrow" id="arr-detected_at"></span></th>
         </tr>
       </thead>
       <tbody id="pciTbody">
-        <tr><td colspan="9" style="text-align:center;padding:2rem;color:var(--fg-dim)">Loading…</td></tr>
+        <tr><td colspan="11" style="text-align:center;padding:2rem;color:var(--fg-dim)">Loading…</td></tr>
       </tbody>
     </table>
   </div>
@@ -68,9 +75,41 @@
 {% endblock %}
 
 {% block scripts %}
+<style>
+.sortable { cursor:pointer; user-select:none; white-space:nowrap; }
+.sortable:hover { color:var(--accent); }
+.sort-arrow { font-size:.7rem; opacity:.6; }
+.exposed-badge { font-size:.7rem;font-weight:700;padding:.08rem .4rem;border-radius:4px;
+  background:#ef444422;color:#ef4444;border:1px solid #ef444444; }
+.safe-badge { font-size:.7rem;color:var(--fg-dim); }
+</style>
 <script>
-let allRows = [], offset = 0;
+let allRows = [], offset = 0, sortCol = 'detected_at', sortDir = -1;
 const PAGE = 200;
+
+async function loadStats() {
+  try {
+    const s = await fetch('/api/pci/stats').then(r => r.json());
+    document.getElementById('kTotal').textContent = (s.total        || 0).toLocaleString();
+    document.getElementById('kValid').textContent = (s.luhn_valid   || 0).toLocaleString();
+    document.getElementById('kNets').textContent  = (s.networks     || 0).toLocaleString();
+    document.getElementById('kHosts').textContent = (s.unique_hosts || 0).toLocaleString();
+    document.getElementById('kExp').textContent   = (s.exp_exposed  || 0).toLocaleString();
+    document.getElementById('kCvv').textContent   = (s.cvv_exposed  || 0).toLocaleString();
+  } catch(e) { console.error('pci/stats error', e); }
+}
+
+async function triggerBackfill() {
+  const btn = document.getElementById('backfillBtn');
+  btn.disabled = true; btn.textContent = 'Scanning…';
+  try {
+    const r = await fetch('/api/pci/backfill', {method:'POST'}).then(r=>r.json());
+    btn.textContent = `Done (${r.findings_inserted} new)`;
+    await loadStats();
+    fetchFindings(true);
+  } catch(e) { btn.textContent = 'Error'; console.error(e); }
+  setTimeout(() => { btn.disabled=false; btn.textContent='Backfill scan'; }, 3000);
+}
 
 const NET_COLORS = {
   Visa: '#1a56db', MasterCard: '#e74c3c', Amex: '#16a34a',
@@ -103,11 +142,23 @@ function luhnBadge(v) {
     : `<span class="badge badge-warn">✗ invalid</span>`;
 }
 
+function expBadge(exposed, masked) {
+  if (!exposed) return '';
+  return `<span class="exposed-badge" title="Expiration date detected"><code>${esc(masked || '**/**')}</code></span>`;
+}
+
+function cvvBadge(exposed, masked) {
+  if (!exposed) return '';
+  return `<span class="exposed-badge" title="CVV/CVC code detected"><code>${esc(masked || '***')}</code></span>`;
+}
+
 function buildRow(r) {
   return `<tr>
     <td><code style="font-size:.8rem;color:var(--fg);font-family:var(--font-mono)">${esc(r.masked_pan)}</code></td>
     <td>${netBadge(r.card_network)}</td>
     <td>${luhnBadge(r.luhn_valid)}</td>
+    <td>${expBadge(r.exp_date_exposed, r.exp_date_masked)}</td>
+    <td>${cvvBadge(r.cvv_exposed, r.cvv_masked)}</td>
     <td>${esc(r.issuer||'—')}</td>
     <td>${esc(r.country||'—')}</td>
     <td style="color:var(--fg-dim);font-size:.8rem">${esc(r.funding_type||'—')}</td>
@@ -117,11 +168,21 @@ function buildRow(r) {
   </tr>`;
 }
 
+function sortBy(col) {
+  if (sortCol === col) { sortDir *= -1; }
+  else { sortCol = col; sortDir = col === 'detected_at' ? -1 : 1; }
+  document.querySelectorAll('.sort-arrow').forEach(el => el.textContent = '');
+  const arrow = document.getElementById('arr-' + col);
+  if (arrow) arrow.textContent = sortDir === 1 ? ' ▲' : ' ▼';
+  applyFilters();
+}
+
 function applyFilters() {
   const q = document.getElementById('pciSearch').value.toLowerCase();
   const net = document.getElementById('pciNetwork').value;
   const luhn = document.getElementById('pciLuhn').value;
-  const filtered = allRows.filter(r => {
+  let filtered = allRows.filter(r => {
+    if (!r.exp_date_exposed && !r.cvv_exposed) return false;
     if (net && r.card_network !== net) return false;
     if (luhn !== '' && String(r.luhn_valid) !== luhn) return false;
     if (q) {
@@ -130,15 +191,17 @@ function applyFilters() {
     }
     return true;
   });
+  // Client-side sort
+  filtered.sort((a, b) => {
+    let av = a[sortCol] ?? '', bv = b[sortCol] ?? '';
+    if (typeof av === 'string') av = av.toLowerCase();
+    if (typeof bv === 'string') bv = bv.toLowerCase();
+    return av < bv ? -sortDir : av > bv ? sortDir : 0;
+  });
   document.getElementById('pciCount').textContent = filtered.length.toLocaleString() + ' findings';
   document.getElementById('pciTbody').innerHTML = filtered.length
     ? filtered.map(buildRow).join('')
-    : '<tr><td colspan="9" style="text-align:center;padding:2rem;color:var(--fg-dim)">No findings match.</td></tr>';
-  // Update kpis from full dataset
-  document.getElementById('kTotal').textContent = allRows.length.toLocaleString();
-  document.getElementById('kValid').textContent = allRows.filter(r=>r.luhn_valid).length.toLocaleString();
-  document.getElementById('kNets').textContent = new Set(allRows.map(r=>r.card_network).filter(Boolean)).size;
-  document.getElementById('kHosts').textContent = new Set(allRows.map(r=>r.ip)).size.toLocaleString();
+    : '<tr><td colspan="11" style="text-align:center;padding:2rem;color:var(--fg-dim)">No exposed credentials found.</td></tr>';
 }
 
 async function fetchFindings(reset) {
@@ -158,6 +221,13 @@ async function fetchFindings(reset) {
 
 function loadMore() { fetchFindings(false); }
 
+// Initialise sort arrow for default column
+document.addEventListener('DOMContentLoaded', () => {
+  const arrow = document.getElementById('arr-detected_at');
+  if (arrow) arrow.textContent = ' ▼';
+});
+
+loadStats();
 fetchFindings(true);
 </script>
 {% endblock %}

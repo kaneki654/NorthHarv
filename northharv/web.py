@@ -8,6 +8,7 @@ import io
 import json
 import os
 import random as _random
+import resource
 import sqlite3
 import sys
 import threading
@@ -15,6 +16,16 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+
+# Raise the open-file-descriptor limit so high-concurrency scanning
+# doesn't exhaust the default 1024 soft limit.
+try:
+    _soft, _hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    _target = min(65536, _hard)
+    if _soft < _target:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (_target, _hard))
+except Exception:
+    pass
 
 # Ensure the project root is importable
 _base = Path(__file__).parent.parent
@@ -100,7 +111,7 @@ _crawl_task: Optional[asyncio.Task] = None
 _crawl_stop_event: Optional[asyncio.Event] = None
 _crawl_sse_queues: list[asyncio.Queue] = []
 
-CRAWL_PARALLEL = int(os.getenv("CRAWL_PARALLEL", "8"))
+CRAWL_PARALLEL = int(os.getenv("CRAWL_PARALLEL", "32"))
 
 # ── Discover feed state ───────────────────────────────────────────────────────
 _discover_sse_queues: list[asyncio.Queue] = []
@@ -115,6 +126,10 @@ async def _startup():
     _auto_start_crawl()
     # Backfill tags for existing hosts that were stored before tag detection ran
     asyncio.ensure_future(asyncio.to_thread(engine.backfill_tags))
+    # Backfill PCI findings for existing banners (INSERT OR IGNORE is idempotent)
+    asyncio.ensure_future(asyncio.to_thread(engine.backfill_pci))
+    # Backfill geo for hosts with null country (downloads ip2asn on first run)
+    asyncio.ensure_future(asyncio.to_thread(engine.backfill_geo))
 
 
 def _ensure_annotations_table():
@@ -311,7 +326,7 @@ async def api_search(
 @app.get("/api/host/{ip}")
 async def api_host(ip: str):
     rows = _db_dict(
-        "SELECT h.*, COALESCE(a.notes,'') notes, COALESCE(a.tags,'') tags, "
+        "SELECT h.*, h.tags as auto_tags, COALESCE(a.notes,'') notes, COALESCE(a.tags,'') tags, "
         "COALESCE(a.starred,0) starred "
         "FROM hosts h LEFT JOIN annotations a ON h.ip=a.ip AND h.port=a.port "
         "WHERE h.ip=? ORDER BY h.port", (ip,))
@@ -1316,7 +1331,7 @@ async def _run_crawl(ports: list, name: str, resume: bool = False) -> None:
     })
 
     loop = asyncio.get_event_loop()
-    enrich_sem = asyncio.Semaphore(64)
+    enrich_sem = asyncio.Semaphore(256)
     cycle_done = False
 
     async def _scan_chunk(cidr: str) -> int:
@@ -1546,6 +1561,42 @@ async def api_discover(
     return {"hosts": rows, "offset": offset, "count": len(rows)}
 
 
+@app.get("/api/pci/stats")
+async def api_pci_stats():
+    """Accurate aggregate counts for the PCI dashboard KPI tiles."""
+    _exp = "(exp_date_exposed=1 OR cvv_exposed=1)"
+    total        = (_db_one(f"SELECT COUNT(*) AS n FROM pci_findings WHERE {_exp}") or {}).get("n", 0)
+    luhn_valid   = (_db_one(f"SELECT COUNT(*) AS n FROM pci_findings WHERE {_exp} AND luhn_valid=1") or {}).get("n", 0)
+    networks     = (_db_one(f"SELECT COUNT(DISTINCT card_network) AS n FROM pci_findings WHERE {_exp} AND card_network != ''") or {}).get("n", 0)
+    unique_hosts = (_db_one(f"SELECT COUNT(DISTINCT ip) AS n FROM pci_findings WHERE {_exp}") or {}).get("n", 0)
+    exp_exposed  = (_db_one("SELECT COUNT(*) AS n FROM pci_findings WHERE exp_date_exposed=1") or {}).get("n", 0)
+    cvv_exposed  = (_db_one("SELECT COUNT(*) AS n FROM pci_findings WHERE cvv_exposed=1") or {}).get("n", 0)
+    per_network  = _db_dict(f"SELECT card_network, COUNT(*) AS n FROM pci_findings WHERE {_exp} AND card_network != '' GROUP BY card_network ORDER BY n DESC")
+    return {
+        "total": total,
+        "luhn_valid": luhn_valid,
+        "networks": networks,
+        "unique_hosts": unique_hosts,
+        "exp_exposed": exp_exposed,
+        "cvv_exposed": cvv_exposed,
+        "per_network": {r["card_network"]: r["n"] for r in per_network},
+    }
+
+
+@app.post("/api/pci/backfill")
+async def api_pci_backfill():
+    """Trigger a PCI backfill scan of all existing host banners (idempotent)."""
+    result = await asyncio.to_thread(engine.backfill_pci)
+    return result
+
+
+@app.post("/api/geo/backfill")
+async def api_geo_backfill():
+    """Download ip2asn dataset if needed and update all hosts with null country."""
+    result = await asyncio.to_thread(engine.backfill_geo)
+    return result
+
+
 @app.get("/api/pci/findings")
 async def api_pci_findings(
     offset: int = Query(0, ge=0),
@@ -1553,7 +1604,7 @@ async def api_pci_findings(
     network: str = Query(""),
     luhn: str = Query(""),   # "valid" | "invalid" | ""
 ):
-    wheres, params = [], []
+    wheres, params = ["(exp_date_exposed=1 OR cvv_exposed=1)"], []
     if network:
         wheres.append("lower(card_network) = lower(?)")
         params.append(network)
@@ -1561,10 +1612,11 @@ async def api_pci_findings(
         wheres.append("luhn_valid = 1")
     elif luhn == "invalid":
         wheres.append("luhn_valid = 0")
-    where_sql = ("WHERE " + " AND ".join(wheres)) if wheres else ""
+    where_sql = "WHERE " + " AND ".join(wheres)
     rows = _db_dict(
         f"SELECT id, ip, port, service_name, detected_at, card_network, "
-        f"luhn_valid, masked_pan, bin_prefix, issuer, country, funding_type "
+        f"luhn_valid, masked_pan, bin_prefix, issuer, country, funding_type, "
+        f"exp_date_exposed, exp_date_masked, cvv_exposed, cvv_masked "
         f"FROM pci_findings {where_sql} "
         f"ORDER BY detected_at DESC LIMIT ? OFFSET ?",
         tuple(params) + (limit, offset),
