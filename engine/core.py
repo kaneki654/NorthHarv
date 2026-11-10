@@ -2651,6 +2651,126 @@ def backfill_pci() -> dict:
     }
 
 
+def backfill_id() -> dict:
+    """Scan every host banner for identity / sensitive-data patterns.
+
+    Feeds banner + http_headers text from every host into id_detector.scan_asset().
+    Uses INSERT OR IGNORE so duplicate finding_id rows are silently skipped.
+    Safe to call on-demand; logs a full diagnostic summary.
+    Returns counts: inspected, findings_inserted, hosts_with_findings.
+    """
+    try:
+        from engine import id_detector as _id
+    except ImportError:
+        log.warning("backfill_id: id_detector not available — skipping")
+        return {"inspected": 0, "findings_inserted": 0, "hosts_with_findings": 0}
+
+    cfg   = _id.EngineConfig()
+    dedup: dict = {}
+    conn  = db()
+    conn.row_factory = sqlite3.Row
+
+    try:
+        rows = conn.execute(
+            "SELECT ip, port, service_name, banner, http_headers "
+            "FROM hosts WHERE banner IS NOT NULL AND banner != '' "
+            "ORDER BY last_seen DESC"
+        ).fetchall()
+        pre_count = conn.execute("SELECT COUNT(*) FROM id_findings").fetchone()[0]
+    except Exception as exc:
+        log.warning("backfill_id: query error: %s", exc)
+        conn.close()
+        return {"inspected": 0, "findings_inserted": 0, "hosts_with_findings": 0}
+
+    total = len(rows)
+    hosts_with_findings = 0
+    log.info("backfill_id: starting — inspecting %d hosts with banners", total)
+
+    BATCH_SIZE = 200
+    batch: list = []
+
+    def _flush(b: list) -> None:
+        if not b:
+            return
+        try:
+            conn.executemany(
+                """INSERT OR IGNORE INTO id_findings
+                   (finding_id, category, detected_data_type, document_format,
+                    source_asset, detection_method, confidence_score, risk_severity,
+                    redacted_evidence, discovery_timestamp, validation_status,
+                    rule_id, evidence_span_hash, compliance_frameworks)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                b,
+            )
+            conn.commit()
+        except sqlite3.Error as exc:
+            log.warning("backfill_id: batch insert error: %s", exc)
+
+    for r in rows:
+        ip      = r["ip"]
+        port    = r["port"]
+        svc     = r["service_name"] or ""
+        banner  = r["banner"] or ""
+        headers = r["http_headers"] or ""
+
+        content = banner
+        if headers and headers != banner:
+            try:
+                hdata = json.loads(headers) if headers.strip().startswith("{") else {}
+                for k, v in hdata.items():
+                    content += f"\n{k}: {v}"
+            except Exception:
+                content += "\n" + headers
+
+        try:
+            asset = _id.Asset(
+                asset_id=f"{ip}:{port}",
+                uri=f"host://{ip}:{port}/{svc}",
+                content=content.encode("utf-8", errors="replace"),
+                mime_hint="text/plain",
+            )
+            findings = _id.scan_asset(asset, cfg, dedup)
+        except Exception as exc:
+            log.debug("backfill_id: scan error %s:%s — %s", ip, port, exc)
+            continue
+
+        if not findings:
+            continue
+
+        log.info("backfill_id: %s:%s svc=%s — %d finding(s)", ip, port, svc, len(findings))
+        hosts_with_findings += 1
+        for f in findings:
+            batch.append((
+                f.finding_id, f.category, f.detected_data_type, f.document_format,
+                f.source_asset, f.detection_method, f.confidence_score, f.risk_severity,
+                f.redacted_evidence, f.discovery_timestamp, f.validation_status,
+                f.rule_id, f.evidence_span_hash, json.dumps(f.compliance_frameworks),
+            ))
+        if len(batch) >= BATCH_SIZE:
+            _flush(batch)
+            batch = []
+
+    _flush(batch)
+
+    try:
+        post_count = conn.execute("SELECT COUNT(*) FROM id_findings").fetchone()[0]
+        findings_inserted = post_count - pre_count
+    except Exception:
+        findings_inserted = -1
+    finally:
+        conn.close()
+
+    log.info(
+        "backfill_id: done — inspected=%d findings_inserted=%d hosts_with_findings=%d",
+        total, findings_inserted, hosts_with_findings,
+    )
+    return {
+        "inspected": total,
+        "findings_inserted": findings_inserted,
+        "hosts_with_findings": hosts_with_findings,
+    }
+
+
 def backfill_geo() -> dict:
     """Download iptoasn.com dataset if needed, reload GeoDB, then update all hosts with null country.
 

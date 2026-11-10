@@ -32,6 +32,7 @@ _base = Path(__file__).parent.parent
 sys.path.insert(0, str(_base))
 from engine import core as engine  # noqa: E402
 from engine import signatures  # noqa: E402
+from engine import id_detector as _id  # noqa: E402
 
 from fastapi import (
     BackgroundTasks, FastAPI, HTTPException, Query,
@@ -123,6 +124,7 @@ async def _startup():
     engine.GEO = engine.GeoDB()
     engine.CVE = engine.CveDB()
     _ensure_annotations_table()
+    _ensure_id_findings_table()
     _auto_start_crawl()
     # Backfill tags for existing hosts that were stored before tag detection ran
     asyncio.ensure_future(asyncio.to_thread(engine.backfill_tags))
@@ -130,6 +132,29 @@ async def _startup():
     asyncio.ensure_future(asyncio.to_thread(engine.backfill_pci))
     # Backfill geo for hosts with null country (downloads ip2asn on first run)
     asyncio.ensure_future(asyncio.to_thread(engine.backfill_geo))
+
+
+def _ensure_id_findings_table():
+    conn = engine.db()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS id_findings (
+            finding_id          TEXT PRIMARY KEY,
+            category            TEXT NOT NULL,
+            detected_data_type  TEXT NOT NULL,
+            document_format     TEXT NOT NULL,
+            source_asset        TEXT NOT NULL,
+            detection_method    TEXT NOT NULL,
+            confidence_score    REAL NOT NULL,
+            risk_severity       TEXT NOT NULL,
+            redacted_evidence   TEXT NOT NULL,
+            discovery_timestamp TEXT NOT NULL,
+            validation_status   TEXT NOT NULL,
+            rule_id             TEXT DEFAULT '',
+            evidence_span_hash  TEXT DEFAULT '',
+            compliance_frameworks TEXT DEFAULT '[]'
+        )""")
+    conn.commit()
+    conn.close()
 
 
 def _ensure_annotations_table():
@@ -1590,6 +1615,13 @@ async def api_pci_backfill():
     return result
 
 
+@app.post("/api/id/backfill")
+async def api_id_backfill():
+    """Trigger an ID/sensitive-data backfill scan of all existing host banners (idempotent)."""
+    result = await asyncio.to_thread(engine.backfill_id)
+    return result
+
+
 @app.post("/api/geo/backfill")
 async def api_geo_backfill():
     """Download ip2asn dataset if needed and update all hosts with null country."""
@@ -1666,6 +1698,234 @@ def _resp(request: Request, name: str, ctx: dict = {}):
         return templates.TemplateResponse(name, {"request": request, **ctx})
 
 
+# ── Identity & Sensitive Data Discovery Engine ───────────────────────────────
+_id_dedup_state: dict = {}
+_id_config = _id.EngineConfig()
+
+
+@app.post("/api/id/scan")
+async def api_id_scan(request: Request):
+    """Scan arbitrary text or JSON for sensitive data. Returns findings list."""
+    try:
+        body = await request.body()
+        content_type = request.headers.get("content-type", "text/plain")
+        asset = _id.Asset(
+            asset_id=str(uuid.uuid4()),
+            uri="api://scan",
+            content=body,
+            mime_hint=content_type.split(";")[0].strip(),
+        )
+        findings = _id.scan_asset(asset, _id_config, _id_dedup_state)
+        # Persist to DB
+        if findings:
+            conn = engine.db()
+            conn.executemany(
+                """INSERT OR IGNORE INTO id_findings
+                   (finding_id, category, detected_data_type, document_format,
+                    source_asset, detection_method, confidence_score, risk_severity,
+                    redacted_evidence, discovery_timestamp, validation_status,
+                    rule_id, evidence_span_hash, compliance_frameworks)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                [(f.finding_id, f.category, f.detected_data_type, f.document_format,
+                  f.source_asset, f.detection_method, f.confidence_score, f.risk_severity,
+                  f.redacted_evidence, f.discovery_timestamp, f.validation_status,
+                  f.rule_id, f.evidence_span_hash, json.dumps(f.compliance_frameworks))
+                 for f in findings],
+            )
+            conn.commit()
+            conn.close()
+        from dataclasses import asdict
+        return {"findings": [asdict(f) for f in findings], "count": len(findings)}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/id/findings")
+async def api_id_findings(
+    limit:    int  = Query(100, ge=1, le=1000),
+    offset:   int  = Query(0, ge=0),
+    category: str  = Query(""),
+    severity: str  = Query(""),
+    dtype:    str  = Query(""),
+):
+    """List stored identity findings with optional filters."""
+    wheres = []
+    params: list = []
+    if category:
+        wheres.append("category = ?")
+        params.append(category)
+    if severity:
+        wheres.append("risk_severity = ?")
+        params.append(severity)
+    if dtype:
+        wheres.append("detected_data_type = ?")
+        params.append(dtype)
+    where_sql = ("WHERE " + " AND ".join(wheres)) if wheres else ""
+    conn = engine.db()
+    rows = conn.execute(
+        f"SELECT * FROM id_findings {where_sql} ORDER BY discovery_timestamp DESC LIMIT ? OFFSET ?",
+        params + [limit, offset],
+    ).fetchall()
+    total = conn.execute(
+        f"SELECT COUNT(*) FROM id_findings {where_sql}", params
+    ).fetchone()[0]
+    conn.close()
+    keys = ["finding_id", "category", "detected_data_type", "document_format",
+            "source_asset", "detection_method", "confidence_score", "risk_severity",
+            "redacted_evidence", "discovery_timestamp", "validation_status",
+            "rule_id", "evidence_span_hash", "compliance_frameworks"]
+    findings = []
+    for row in rows:
+        d = dict(zip(keys, row))
+        try:
+            d["compliance_frameworks"] = json.loads(d["compliance_frameworks"] or "[]")
+        except Exception:
+            d["compliance_frameworks"] = []
+        findings.append(d)
+    return {"findings": findings, "total": total}
+
+
+@app.get("/api/id/export")
+async def api_id_export(
+    fmt:      str = Query("txt"),
+    category: str = Query(""),
+    severity: str = Query(""),
+    dtype:    str = Query(""),
+    search:   str = Query(""),
+):
+    """Download all matching id_findings with their source banner text."""
+    wheres: list[str] = []
+    params: list = []
+    if category:
+        wheres.append("category = ?")
+        params.append(category)
+    if severity:
+        wheres.append("risk_severity = ?")
+        params.append(severity)
+    if dtype:
+        wheres.append("detected_data_type = ?")
+        params.append(dtype)
+    if search:
+        wheres.append("(redacted_evidence LIKE ? OR detected_data_type LIKE ? OR source_asset LIKE ?)")
+        params += [f"%{search}%", f"%{search}%", f"%{search}%"]
+    where_sql = ("WHERE " + " AND ".join(wheres)) if wheres else ""
+
+    conn = engine.db()
+    conn.row_factory = sqlite3.Row
+    findings = conn.execute(
+        f"SELECT * FROM id_findings {where_sql} ORDER BY discovery_timestamp DESC",
+        params,
+    ).fetchall()
+
+    # Build host banner lookup keyed by "ip:port"
+    unique_assets = {r["source_asset"] for r in findings if ":" in (r["source_asset"] or "")}
+    host_map: dict[str, dict] = {}
+    if unique_assets:
+        placeholders = ",".join("?" * len(unique_assets))
+        asset_list = list(unique_assets)
+        # source_asset is "ip:port" — split and fetch matching hosts
+        pairs = [a.rsplit(":", 1) for a in asset_list if len(a.rsplit(":", 1)) == 2]
+        if pairs:
+            ip_set  = list({p[0] for p in pairs})
+            ph      = ",".join("?" * len(ip_set))
+            hosts   = conn.execute(
+                f"SELECT ip, port, banner, http_headers, service_name FROM hosts WHERE ip IN ({ph})",
+                ip_set,
+            ).fetchall()
+            for h in hosts:
+                host_map[f"{h['ip']}:{h['port']}"] = {
+                    "banner":       h["banner"] or "",
+                    "http_headers": h["http_headers"] or "",
+                    "service_name": h["service_name"] or "",
+                }
+    conn.close()
+
+    finding_keys = ["finding_id", "category", "detected_data_type", "document_format",
+                    "source_asset", "detection_method", "confidence_score", "risk_severity",
+                    "redacted_evidence", "discovery_timestamp", "validation_status",
+                    "rule_id", "evidence_span_hash", "compliance_frameworks"]
+
+    def _enrich(r):
+        d = dict(r)
+        host = host_map.get(d.get("source_asset", ""), {})
+        d["src_banner"]   = host.get("banner", "")
+        d["src_headers"]  = host.get("http_headers", "")
+        d["service_name"] = host.get("service_name", "")
+        try:
+            d["compliance_frameworks"] = json.loads(d.get("compliance_frameworks") or "[]")
+        except Exception:
+            d["compliance_frameworks"] = []
+        return d
+
+    if fmt == "json":
+        def _gen_json():
+            yield "[\n"
+            for i, r in enumerate(findings):
+                d = _enrich(r)
+                yield ("  " if i == 0 else " ,") + json.dumps(d, default=str) + "\n"
+            yield "]\n"
+        return StreamingResponse(
+            _gen_json(),
+            media_type="application/json",
+            headers={"Content-Disposition": "attachment; filename=id_findings.json"},
+        )
+
+    # TSV
+    cols = ["detected_data_type", "category", "risk_severity", "redacted_evidence",
+            "confidence_score", "detection_method", "validation_status",
+            "source_asset", "service_name", "document_format",
+            "discovery_timestamp", "compliance_frameworks", "src_banner", "src_headers"]
+
+    def _gen_tsv():
+        yield "\t".join(cols) + "\n"
+        for r in findings:
+            d = _enrich(r)
+            vals = []
+            for c in cols:
+                v = d.get(c) or ""
+                if c == "confidence_score":
+                    v = str(round(float(v) * 100)) + "%"
+                elif c == "compliance_frameworks":
+                    if isinstance(v, list):
+                        v = "|".join(v)
+                v = str(v).replace("\t", " ").replace("\n", " ").replace("\r", "")
+                vals.append(v)
+            yield "\t".join(vals) + "\n"
+
+    return StreamingResponse(
+        _gen_tsv(),
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=id_findings.txt"},
+    )
+
+
+@app.get("/api/id/stats")
+async def api_id_stats():
+    """Aggregate statistics over all stored identity findings."""
+    conn = engine.db()
+    total      = conn.execute("SELECT COUNT(*) FROM id_findings").fetchone()[0]
+    critical   = conn.execute("SELECT COUNT(*) FROM id_findings WHERE risk_severity='critical'").fetchone()[0]
+    high       = conn.execute("SELECT COUNT(*) FROM id_findings WHERE risk_severity='high'").fetchone()[0]
+    by_cat     = conn.execute(
+        "SELECT category, COUNT(*) FROM id_findings GROUP BY category ORDER BY 2 DESC"
+    ).fetchall()
+    by_type    = conn.execute(
+        "SELECT detected_data_type, COUNT(*) FROM id_findings GROUP BY detected_data_type ORDER BY 2 DESC LIMIT 10"
+    ).fetchall()
+    validated  = conn.execute(
+        "SELECT COUNT(*) FROM id_findings WHERE validation_status='validated'"
+    ).fetchone()[0]
+    conn.close()
+    return {
+        "total":        total,
+        "critical":     critical,
+        "high":         high,
+        "validated":    validated,
+        "by_category":  [{"category": r[0], "count": r[1]} for r in by_cat],
+        "by_data_type": [{"data_type": r[0], "count": r[1]} for r in by_type],
+    }
+
+
 @app.get("/")
 async def ui_index(request: Request):
     return _resp(request, "index.html")
@@ -1699,6 +1959,11 @@ async def ui_feeds(request: Request):
 @app.get("/pci")
 async def ui_pci(request: Request):
     return _resp(request, "pci.html")
+
+
+@app.get("/id")
+async def ui_id(request: Request):
+    return _resp(request, "id.html")
 
 
 @app.get("/export")

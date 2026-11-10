@@ -1,0 +1,464 @@
+{% extends "base.html" %}
+{% block title %}ID Findings{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="page-title">
+    <span class="pt-icon" style="color:var(--warning)"><svg class="icon"><use href="#i-shield-check"/></svg></span>
+    Identity &amp; Sensitive Data
+  </div>
+  <div class="page-sub">PII, government IDs, secrets and financial data detected on authorized assets — redacted before storage.</div>
+</div>
+
+<!-- Stats row -->
+<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:14px;margin-bottom:1.2rem">
+  <div class="stat-tile"><div class="st-val" id="kTotal">—</div><div class="st-lbl">Total Findings</div></div>
+  <div class="stat-tile"><div class="st-val" id="kCritical" style="color:var(--critical)">—</div><div class="st-lbl">Critical</div></div>
+  <div class="stat-tile"><div class="st-val" id="kHigh" style="color:var(--danger)">—</div><div class="st-lbl">High</div></div>
+  <div class="stat-tile"><div class="st-val" id="kValidated">—</div><div class="st-lbl">Validated</div></div>
+  <div class="stat-tile"><div class="st-val" id="kCategories">—</div><div class="st-lbl">Categories</div></div>
+  <div class="stat-tile"><div class="st-val" id="kDataTypes">—</div><div class="st-lbl">Data Types</div></div>
+</div>
+
+<!-- Category breakdown chips -->
+<div id="categoryChips" style="display:flex;flex-wrap:wrap;gap:.5rem;margin-bottom:1rem"></div>
+
+<!-- Filters -->
+<div class="card mb-3" style="padding:.7rem 1rem" data-reveal>
+  <div style="display:flex;flex-wrap:wrap;gap:.5rem;align-items:center">
+    <input class="form-input" id="idSearch" placeholder="Filter type, source, method…"
+      style="max-width:260px" oninput="applyFilters()">
+    <select class="form-input" id="idCategory" style="max-width:170px" onchange="applyFilters()">
+      <option value="">All categories</option>
+      <option value="government_id">Government ID</option>
+      <option value="personal_information">Personal Info</option>
+      <option value="financial">Financial</option>
+      <option value="secret">Secrets / Keys</option>
+    </select>
+    <select class="form-input" id="idSeverity" style="max-width:150px" onchange="applyFilters()">
+      <option value="">Any severity</option>
+      <option value="critical">Critical</option>
+      <option value="high">High</option>
+      <option value="medium">Medium</option>
+      <option value="low">Low</option>
+    </select>
+    <select class="form-input" id="idStatus" style="max-width:160px" onchange="applyFilters()">
+      <option value="">Any status</option>
+      <option value="validated">Validated</option>
+      <option value="unvalidated">Unvalidated</option>
+      <option value="rejected">Rejected</option>
+    </select>
+    <span class="text-sm" style="color:var(--fg-dim)" id="idCount">— findings</span>
+    <div style="margin-left:auto;display:flex;gap:.5rem">
+      <button class="btn btn-sm" id="backfillBtn" onclick="triggerBackfill()">Scan all hosts</button>
+      <button class="btn btn-sm" onclick="exportFindings('txt')">Export TXT</button>
+      <button class="btn btn-sm" onclick="exportFindings('json')">Export JSON</button>
+      <button class="btn btn-sm" onclick="loadPage(currentPage+1)">Load more</button>
+    </div>
+  </div>
+</div>
+
+<!-- Table -->
+<div class="card" data-reveal>
+  <div style="overflow-x:auto">
+    <table class="data-table" id="idTable">
+      <thead>
+        <tr>
+          <th class="sortable" onclick="sortBy('detected_data_type')">Data Type <span class="sort-arrow" id="arr-detected_data_type"></span></th>
+          <th class="sortable" onclick="sortBy('category')">Category <span class="sort-arrow" id="arr-category"></span></th>
+          <th class="sortable" onclick="sortBy('risk_severity')">Severity <span class="sort-arrow" id="arr-risk_severity"></span></th>
+          <th>
+            Redacted Evidence
+            <button id="evidenceToggle" onclick="toggleEvidence()" title="Show / hide evidence"
+              style="background:none;border:none;cursor:pointer;color:var(--fg-3);padding:0 0 0 5px;vertical-align:middle;line-height:1">
+              <svg id="eyeIcon" xmlns="http://www.w3.org/2000/svg" width="14" height="14"
+                viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round">
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                <circle cx="12" cy="12" r="3"/>
+              </svg>
+            </button>
+          </th>
+          <th class="sortable" onclick="sortBy('confidence_score')">Confidence <span class="sort-arrow" id="arr-confidence_score"></span></th>
+          <th>Detection</th>
+          <th class="sortable" onclick="sortBy('validation_status')">Status <span class="sort-arrow" id="arr-validation_status"></span></th>
+          <th>Compliance</th>
+          <th class="sortable" onclick="sortBy('source_asset')">Source <span class="sort-arrow" id="arr-source_asset"></span></th>
+          <th>Format</th>
+          <th class="sortable" onclick="sortBy('discovery_timestamp')">Detected <span class="sort-arrow" id="arr-discovery_timestamp"></span></th>
+        </tr>
+      </thead>
+      <tbody id="idTbody">
+        <tr><td colspan="11" style="text-align:center;padding:2rem;color:var(--fg-dim)">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Empty state -->
+<div id="idEmptyState" style="display:none;text-align:center;padding:3rem;color:var(--fg-dim)">
+  <svg class="icon" style="width:2.4rem;height:2.4rem;margin-bottom:.8rem;opacity:.35"><use href="#i-shield-check"/></svg>
+  <div style="font-size:1.1rem;margin-bottom:.4rem">No findings yet</div>
+  <div style="font-size:.85rem">POST a document to <code>/api/id/scan</code> to begin detection.</div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<style>
+.sortable { cursor:pointer; user-select:none; white-space:nowrap; }
+.sortable:hover { color:var(--accent); }
+
+.id-sev {
+  display:inline-block;
+  padding:.18em .55em;
+  border-radius:4px;
+  font-size:.72rem;
+  font-weight:700;
+  letter-spacing:.03em;
+  text-transform:uppercase;
+}
+.id-sev-critical { background:rgba(255,80,80,.15);  color:#ff5050; border:1px solid rgba(255,80,80,.3); }
+.id-sev-high     { background:rgba(249,115,22,.15); color:#f97316; border:1px solid rgba(249,115,22,.3); }
+.id-sev-medium   { background:rgba(234,179,8,.15);  color:#eab308; border:1px solid rgba(234,179,8,.3); }
+.id-sev-low      { background:rgba(99,99,99,.15);   color:#9ca3af; border:1px solid rgba(99,99,99,.3); }
+
+.id-status {
+  display:inline-block;
+  padding:.15em .5em;
+  border-radius:4px;
+  font-size:.7rem;
+  font-weight:600;
+  text-transform:uppercase;
+}
+.id-status-validated   { background:rgba(34,197,94,.12); color:#22c55e; border:1px solid rgba(34,197,94,.3); }
+.id-status-unvalidated { background:rgba(99,99,99,.12);  color:#6b7280; border:1px solid rgba(99,99,99,.3); }
+.id-status-rejected    { background:rgba(239,68,68,.12); color:#ef4444; border:1px solid rgba(239,68,68,.3); }
+
+.id-evidence {
+  font-family:var(--font-mono, monospace);
+  font-size:.8rem;
+  color:var(--accent);
+  max-width:220px;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  cursor:default;
+}
+
+.id-category-chip {
+  display:inline-flex;
+  align-items:center;
+  gap:.35rem;
+  padding:.25em .7em;
+  border-radius:5px;
+  font-size:.74rem;
+  font-weight:600;
+  cursor:pointer;
+  transition:opacity .15s;
+  border:1px solid transparent;
+  background:none;
+}
+.id-category-chip:hover { opacity:.8; }
+.id-category-chip.active { border-color:currentColor; }
+
+.conf-bar {
+  display:inline-block;
+  width:48px;
+  height:6px;
+  background:var(--border);
+  border-radius:3px;
+  overflow:hidden;
+  vertical-align:middle;
+  margin-right:4px;
+}
+.conf-bar-fill { height:100%; border-radius:3px; background:var(--primary); }
+
+.compliance-tag {
+  display:inline-block;
+  font-size:.65rem;
+  padding:.1em .4em;
+  border-radius:3px;
+  background:rgba(88,166,255,.1);
+  color:var(--primary);
+  border:1px solid rgba(88,166,255,.2);
+  margin:.1em .15em .1em 0;
+  white-space:nowrap;
+}
+</style>
+
+<script>
+/* ── state ─────────────────────────────────────────────── */
+let allFindings = [];
+let sortCol = 'discovery_timestamp';
+let sortAsc  = false;
+let currentPage = 0;
+const PAGE = 100;
+let activeCategory = '';
+let statsCache = {};
+let evidenceHidden = false;
+
+/* ── boot ──────────────────────────────────────────────── */
+document.addEventListener('DOMContentLoaded', () => {
+  loadStats();
+  loadPage(0);
+});
+
+/* ── stats ─────────────────────────────────────────────── */
+async function loadStats() {
+  try {
+    const r = await fetch('/api/id/stats');
+    if (!r.ok) return;
+    const d = await r.json();
+    statsCache = d;
+    document.getElementById('kTotal').textContent     = (d.total    ?? 0).toLocaleString();
+    document.getElementById('kCritical').textContent  = (d.critical ?? 0).toLocaleString();
+    document.getElementById('kHigh').textContent      = (d.high     ?? 0).toLocaleString();
+    document.getElementById('kValidated').textContent = (d.validated ?? 0).toLocaleString();
+    const cats   = (d.by_category  || []);
+    const dtypes = (d.by_data_type || []);
+    document.getElementById('kCategories').textContent = cats.length;
+    document.getElementById('kDataTypes').textContent  = dtypes.length;
+    // convert array [{category, count}] to map for chip rendering
+    const catMap = Object.fromEntries(cats.map(c => [c.category, c.count]));
+    renderCategoryChips(catMap);
+  } catch(e) {
+    console.error('id/stats', e);
+  }
+}
+
+/* ── category chips ────────────────────────────────────── */
+const CAT_COLORS = {
+  government_id:        { bg:'rgba(167,139,250,.13)', color:'#a78bfa' },
+  personal_information: { bg:'rgba(56,189,248,.13)',  color:'#38bdf8' },
+  financial:            { bg:'rgba(249,115,22,.13)',  color:'#f97316' },
+  secret:               { bg:'rgba(239,68,68,.13)',   color:'#ef4444' },
+};
+const CAT_LABELS = {
+  government_id:'Government ID', personal_information:'Personal Info',
+  financial:'Financial', secret:'Secrets',
+};
+
+function renderCategoryChips(byCategory) {
+  const wrap = document.getElementById('categoryChips');
+  wrap.innerHTML = '';
+  if (!Object.keys(byCategory).length) return;
+
+  const makeChip = (label, cat, style) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'id-category-chip' + (activeCategory === cat ? ' active' : '');
+    Object.assign(btn.style, style);
+    btn.textContent = label;
+    btn.onclick = () => {
+      activeCategory = cat;
+      document.getElementById('idCategory').value = cat;
+      applyFilters();
+      renderCategoryChips(byCategory);
+    };
+    return btn;
+  };
+
+  wrap.appendChild(makeChip('All', '', { background:'rgba(99,99,99,.12)', color:'var(--fg-2)', borderColor:'var(--border)' }));
+  for (const [cat, count] of Object.entries(byCategory)) {
+    const c = CAT_COLORS[cat] || { bg:'rgba(99,99,99,.12)', color:'var(--fg-2)' };
+    const btn = makeChip(`${CAT_LABELS[cat] || cat} ${count}`, cat, { background:c.bg, color:c.color });
+    wrap.appendChild(btn);
+  }
+}
+
+/* ── load findings ─────────────────────────────────────── */
+async function loadPage(page) {
+  const cat = document.getElementById('idCategory').value;
+  const sev = document.getElementById('idSeverity').value;
+  const params = new URLSearchParams({ limit: PAGE, offset: page * PAGE });
+  if (cat) params.set('category', cat);
+  if (sev) params.set('severity', sev);
+
+  try {
+    const r = await fetch('/api/id/findings?' + params);
+    if (!r.ok) throw new Error(r.status);
+    const d = await r.json();
+    if (page === 0) allFindings = d.findings || [];
+    else            allFindings = allFindings.concat(d.findings || []);
+    currentPage = page;
+    applyFilters();
+  } catch(e) {
+    document.getElementById('idTbody').innerHTML =
+      `<tr><td colspan="11" style="text-align:center;padding:1.5rem;color:var(--danger)">Failed to load: ${e.message}</td></tr>`;
+  }
+}
+
+/* ── filter + sort ─────────────────────────────────────── */
+function applyFilters() {
+  const q    = document.getElementById('idSearch').value.toLowerCase();
+  const cat  = document.getElementById('idCategory').value;
+  const sev  = document.getElementById('idSeverity').value;
+  const stat = document.getElementById('idStatus').value;
+
+  let rows = allFindings.filter(f => {
+    if (cat  && f.category !== cat)          return false;
+    if (sev  && f.risk_severity !== sev)     return false;
+    if (stat && f.validation_status !== stat) return false;
+    if (q) {
+      const hay = [f.detected_data_type, f.category, f.source_asset,
+                   f.detection_method, f.document_format, f.redacted_evidence,
+                   f.risk_severity, f.validation_status].join(' ').toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+
+  rows = rows.sort((a, b) => {
+    let av = a[sortCol] ?? '', bv = b[sortCol] ?? '';
+    if (typeof av === 'string') av = av.toLowerCase();
+    if (typeof bv === 'string') bv = bv.toLowerCase();
+    return sortAsc ? (av < bv ? -1 : av > bv ? 1 : 0)
+                   : (av > bv ? -1 : av < bv ? 1 : 0);
+  });
+
+  document.getElementById('idCount').textContent =
+    rows.length.toLocaleString() + ' finding' + (rows.length !== 1 ? 's' : '');
+
+  const empty = document.getElementById('idEmptyState');
+  const table = document.getElementById('idTable');
+  if (rows.length === 0 && allFindings.length === 0) {
+    empty.style.display = '';
+    table.style.display = 'none';
+  } else {
+    empty.style.display = 'none';
+    table.style.display = '';
+    renderRows(rows);
+  }
+}
+
+/* ── render rows ───────────────────────────────────────── */
+const SEV_CLS = { critical:'id-sev-critical', high:'id-sev-high', medium:'id-sev-medium', low:'id-sev-low' };
+const STA_CLS = { validated:'id-status-validated', unvalidated:'id-status-unvalidated', rejected:'id-status-rejected' };
+
+function renderRows(rows) {
+  const tbody = document.getElementById('idTbody');
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;padding:1.5rem;color:var(--fg-dim)">No matching findings</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map(f => {
+    const sev    = (f.risk_severity    || 'low').toLowerCase();
+    const stat   = (f.validation_status || 'unvalidated').toLowerCase();
+    const conf   = Math.round((f.confidence_score || 0) * 100);
+    const sevCls = SEV_CLS[sev]  || 'id-sev-low';
+    const staCls = STA_CLS[stat] || 'id-status-unvalidated';
+
+    let frameworks = f.compliance_frameworks || [];
+    if (typeof frameworks === 'string') {
+      try { frameworks = JSON.parse(frameworks); } catch { frameworks = []; }
+    }
+    const compHtml = frameworks.length
+      ? frameworks.slice(0, 3).map(fw => `<span class="compliance-tag">${esc(fw)}</span>`).join('')
+        + (frameworks.length > 3 ? `<span class="compliance-tag">+${frameworks.length - 3}</span>` : '')
+      : '<span style="color:var(--fg-dim);font-size:.72rem">—</span>';
+
+    const srcRaw   = f.source_asset || '';
+    const srcLabel = srcRaw.includes('/') ? srcRaw.split('/').pop() || srcRaw : srcRaw;
+    const ts       = f.discovery_timestamp
+      ? f.discovery_timestamp.replace('T', ' ').replace(/\.\d+Z?$/, '')
+      : '—';
+    const dtypeLabel = (f.detected_data_type || '').replace(/_/g, ' ');
+
+    return `<tr>
+      <td style="font-weight:600;white-space:nowrap">${esc(dtypeLabel)}</td>
+      <td style="color:var(--fg-2);white-space:nowrap">${esc(f.category || '—')}</td>
+      <td><span class="id-sev ${sevCls}">${esc(sev)}</span></td>
+      <td><span class="id-evidence" title="${evidenceHidden ? '' : esc(f.redacted_evidence || '')}">${evidenceHidden ? '•'.repeat(Math.min((f.redacted_evidence||'—').length, 14)) : esc(f.redacted_evidence || '—')}</span></td>
+      <td style="white-space:nowrap">
+        <span class="conf-bar"><span class="conf-bar-fill" style="width:${conf}%"></span></span>${conf}%
+      </td>
+      <td style="font-size:.78rem;color:var(--fg-3)">${esc(f.detection_method || '—')}</td>
+      <td><span class="id-status ${staCls}">${esc(stat)}</span></td>
+      <td style="font-size:.72rem">${compHtml}</td>
+      <td style="font-size:.78rem;color:var(--fg-3);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+          title="${esc(srcRaw)}">${esc(srcLabel)}</td>
+      <td style="font-size:.78rem;color:var(--fg-3)">${esc(f.document_format || '—')}</td>
+      <td style="font-size:.78rem;color:var(--fg-dim);white-space:nowrap">${esc(ts)}</td>
+    </tr>`;
+  }).join('');
+}
+
+/* ── eye toggle ────────────────────────────────────────── */
+function toggleEvidence() {
+  evidenceHidden = !evidenceHidden;
+  const btn = document.getElementById('evidenceToggle');
+  if (evidenceHidden) {
+    btn.style.color = 'var(--accent)';
+    btn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14"
+      viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+      stroke-linecap="round" stroke-linejoin="round">
+      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/>
+      <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>
+      <line x1="1" y1="1" x2="23" y2="23"/>
+    </svg>`;
+  } else {
+    btn.style.color = 'var(--fg-3)';
+    btn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14"
+      viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+      stroke-linecap="round" stroke-linejoin="round">
+      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+      <circle cx="12" cy="12" r="3"/>
+    </svg>`;
+  }
+  applyFilters();
+}
+
+/* ── sort ──────────────────────────────────────────────── */
+function sortBy(col) {
+  if (sortCol === col) sortAsc = !sortAsc;
+  else { sortCol = col; sortAsc = false; }
+  document.querySelectorAll('.sort-arrow').forEach(el => el.textContent = '');
+  const el = document.getElementById('arr-' + col);
+  if (el) el.textContent = sortAsc ? ' ↑' : ' ↓';
+  applyFilters();
+}
+
+/* ── backfill ──────────────────────────────────────────── */
+async function triggerBackfill() {
+  const btn = document.getElementById('backfillBtn');
+  btn.disabled = true;
+  btn.textContent = 'Scanning…';
+  try {
+    const r = await fetch('/api/id/backfill', { method: 'POST' });
+    const d = await r.json();
+    btn.textContent = `Done — ${d.findings_inserted ?? 0} new`;
+    setTimeout(() => { btn.textContent = 'Scan all hosts'; btn.disabled = false; }, 4000);
+    // reload findings and stats
+    await loadStats();
+    await loadPage(0);
+  } catch(e) {
+    btn.textContent = 'Error';
+    btn.disabled = false;
+  }
+}
+
+/* ── export ────────────────────────────────────────────── */
+function exportFindings(fmt) {
+  const cat    = document.getElementById('idCategory').value;
+  const sev    = document.getElementById('idSeverity').value;
+  const search = document.getElementById('idSearch').value;
+  const p      = new URLSearchParams({ fmt });
+  if (cat)    p.set('category', cat);
+  if (sev)    p.set('severity', sev);
+  if (search) p.set('search', search);
+  const a = document.createElement('a');
+  a.href = '/api/id/export?' + p;
+  a.download = `id_findings.${fmt === 'json' ? 'json' : 'txt'}`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
+/* ── util ──────────────────────────────────────────────── */
+function esc(s) {
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+</script>
+{% endblock %}
