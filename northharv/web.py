@@ -125,6 +125,7 @@ async def _startup():
     engine.CVE = engine.CveDB()
     _ensure_annotations_table()
     _ensure_id_findings_table()
+    _ensure_exposure_findings_table()
     _auto_start_crawl()
     # Backfill tags for existing hosts that were stored before tag detection ran
     asyncio.ensure_future(asyncio.to_thread(engine.backfill_tags))
@@ -1937,6 +1938,161 @@ async def api_id_stats():
         "by_category":  [{"category": r[0], "count": r[1]} for r in by_cat],
         "by_data_type": [{"data_type": r[0], "count": r[1]} for r in by_type],
     }
+
+
+# ── Detection Engine API ──────────────────────────────────────────────────────
+
+def _ensure_exposure_findings_table():
+    conn = engine.db()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS exposure_findings (
+            finding_id           TEXT PRIMARY KEY,
+            target               TEXT NOT NULL,
+            asset_type           TEXT NOT NULL,
+            finding_type         TEXT NOT NULL,
+            title                TEXT NOT NULL,
+            description          TEXT NOT NULL,
+            severity             TEXT NOT NULL,
+            confidence           REAL NOT NULL,
+            verification_status  TEXT NOT NULL,
+            source_resource      TEXT NOT NULL,
+            evidence             TEXT DEFAULT '{}',
+            detection_engine     TEXT NOT NULL,
+            engine_version       TEXT NOT NULL,
+            first_observed       TEXT NOT NULL,
+            last_observed        TEXT NOT NULL,
+            finding_status       TEXT DEFAULT 'new',
+            remediation          TEXT DEFAULT '',
+            references           TEXT DEFAULT '[]',
+            compliance_frameworks TEXT DEFAULT '[]',
+            rule_id              TEXT DEFAULT '',
+            raw_evidence_key     TEXT DEFAULT ''
+        )""")
+    conn.commit()
+    conn.close()
+
+
+def _load_engines():
+    """Import engine modules so @register_engine decorators fire."""
+    import importlib
+    for mod in ("engine.sensitive_file_engine", "engine.db_exposure_engine"):
+        try:
+            importlib.import_module(mod)
+        except Exception:
+            pass
+
+
+@app.get("/api/engines")
+async def api_engines_list():
+    """List all registered detection engines and their health metrics."""
+    _load_engines()
+    from engine.base_engine import list_engines
+    return {"engines": list_engines()}
+
+
+@app.get("/api/engines/{name}/health")
+async def api_engine_health(name: str):
+    """Return health metrics for a specific engine."""
+    _load_engines()
+    from engine.base_engine import engine_health
+    h = engine_health(name)
+    if h is None:
+        raise HTTPException(status_code=404, detail=f"Engine '{name}' not found")
+    return h
+
+
+@app.post("/api/engines/run")
+async def api_engines_run(request: Request):
+    """
+    Run registered engines against a target and persist results.
+
+    Body (JSON): {"ip": "1.2.3.4", "port": 9200, "service_name": "...", "banner": "..."}
+    Returns all UnifiedFinding objects produced.
+    """
+    _load_engines()
+    _ensure_exposure_findings_table()
+    from engine.base_engine import run_all_engines
+    from dataclasses import asdict
+
+    try:
+        target = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    if not target.get("ip") or not target.get("port"):
+        raise HTTPException(status_code=422, detail="'ip' and 'port' are required")
+
+    findings = await asyncio.to_thread(run_all_engines, target)
+
+    conn = engine.db()
+    for f in findings:
+        d = asdict(f)
+        conn.execute("""
+            INSERT OR REPLACE INTO exposure_findings
+            (finding_id, target, asset_type, finding_type, title, description,
+             severity, confidence, verification_status, source_resource,
+             evidence, detection_engine, engine_version, first_observed,
+             last_observed, finding_status, remediation, references,
+             compliance_frameworks, rule_id, raw_evidence_key)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            d["finding_id"], d["target"], d["asset_type"], d["finding_type"],
+            d["title"], d["description"], d["severity"], d["confidence"],
+            d["verification_status"], d["source_resource"],
+            json.dumps(d.get("evidence", {})),
+            d["detection_engine"], d["engine_version"],
+            d["first_observed"], d["last_observed"], d["finding_status"],
+            d["remediation"],
+            json.dumps(d.get("references", [])),
+            json.dumps(d.get("compliance_frameworks", [])),
+            d["rule_id"], d["raw_evidence_key"],
+        ))
+    conn.commit()
+    conn.close()
+
+    return {"count": len(findings), "findings": [asdict(f) for f in findings]}
+
+
+@app.get("/api/exposure/findings")
+async def api_exposure_findings(
+    severity: str = Query(""),
+    finding_type: str = Query(""),
+    engine_name: str = Query(""),
+    limit: int = Query(200),
+    offset: int = Query(0),
+):
+    """List persisted exposure findings from all detection engines."""
+    _ensure_exposure_findings_table()
+    wheres = []
+    params: list = []
+    if severity:
+        wheres.append("severity = ?")
+        params.append(severity)
+    if finding_type:
+        wheres.append("finding_type = ?")
+        params.append(finding_type)
+    if engine_name:
+        wheres.append("detection_engine = ?")
+        params.append(engine_name)
+    where_sql = ("WHERE " + " AND ".join(wheres)) if wheres else ""
+    params += [limit, offset]
+    rows = _db_dict(
+        f"SELECT * FROM exposure_findings {where_sql} "
+        f"ORDER BY first_observed DESC LIMIT ? OFFSET ?",
+        params,
+    )
+    for r in rows:
+        for col in ("evidence", "references", "compliance_frameworks"):
+            if r.get(col):
+                try:
+                    r[col] = json.loads(r[col])
+                except Exception:
+                    pass
+    total = _db_one(
+        f"SELECT COUNT(*) as n FROM exposure_findings {where_sql}",
+        params[:-2],
+    )
+    return {"total": (total or {}).get("n", 0), "findings": rows}
 
 
 @app.get("/")
