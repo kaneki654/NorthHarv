@@ -447,28 +447,54 @@ _NAME_STOP_WORDS = frozenset({
     "login", "logout", "click", "here", "read", "more", "next", "prev",
     "true", "false", "null", "none", "type", "data", "field", "value",
     "literal", "header", "footer", "section", "menu", "link", "text",
+    "found", "failed", "gateway", "maintenance", "router", "season",
+    "broadband", "unauthorized", "timeout", "unavailable", "exception",
+    "unknown", "invalid", "disabled", "expired", "refused", "reset",
+    "online", "offline", "under", "request", "response", "status",
 })
 
 
-def _is_ssh_algo_email(raw: str) -> bool:
+# Domains that appear in FTP server banners (developer contact, not user PII)
+_FTP_BANNER_EMAIL_DOMAINS = frozenset({
+    "filezilla-project.org", "gmx.de",
+})
+
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+
+def _is_banner_noise_email(raw: str) -> bool:
+    """Returns True if this email-shaped string is banner noise, not a person's email."""
     parts = raw.rsplit("@", 1)
     if len(parts) != 2:
         return False
-    domain = parts[1].lower().rstrip(".")
+    local, domain = parts[0], parts[1].lower().rstrip(".")
+    # SSH algorithm identifiers
     if domain in _SSH_ALGO_DOMAINS:
         return True
-    # POP3 / IMAP message IDs: local-part is digits.digits
-    if re.match(r"^\d+\.\d+$", parts[0]):
+    # FTP server developer emails baked into server banners
+    if domain in _FTP_BANNER_EMAIL_DOMAINS:
+        return True
+    # POP3 / IMAP message IDs: local-part is digits.digits (timestamp)
+    if re.match(r"^\d+\.\d+$", local):
+        return True
+    # UUID-based message IDs: local-part is a UUID
+    if _UUID_RE.match(local):
+        return True
+    # Pure-digit local-parts that are timestamps (e.g. 20261106134751)
+    if re.match(r"^\d{10,}$", local):
         return True
     return False
 
 
 def personal_information_detector(text: str) -> List[RawCandidate]:
     raw_out: List[RawCandidate] = _run_rules(text, _RULES, {"personal_information"})
-    # Filter SSH algorithm identifiers and mail message IDs masquerading as emails
+    # Filter banner noise from emails: SSH algorithm names, FTP developer contacts, message IDs
     out: List[RawCandidate] = [
         c for c in raw_out
-        if not (c.detected_data_type == "EMAIL_ADDRESS" and _is_ssh_algo_email(c.raw_value))
+        if not (c.detected_data_type == "EMAIL_ADDRESS" and _is_banner_noise_email(c.raw_value))
     ]
     for m in _NAME_RE.finditer(text):
         if "\r" in m.group(0) or "\n" in m.group(0):
@@ -574,11 +600,41 @@ def confidence_scorer(
     return max(0.0, min(1.0, score))
 
 
+def _card_grouping_valid(raw: str) -> bool:
+    """Reject non-card separator patterns like '54-149665781-0 0' (protocol sequence IDs).
+
+    Standard card formats use 4-4-4-4 (16-digit) or 4-6-5 (Amex 15-digit) groupings,
+    or no separators at all.  Protocol sequence numbers use irregular groupings.
+    """
+    # No separators → can't rule out from grouping alone
+    if re.fullmatch(r"\d+", raw.strip()):
+        return True
+    groups = [g for g in re.split(r"[ \-]+", raw.strip()) if g]
+    # If only one group survived, separators were trailing/leading noise
+    if len(groups) <= 1:
+        return True
+    lengths = [len(g) for g in groups if g.isdigit()]
+    if not lengths:
+        return False
+    # Accept standard card groupings: 4-4-4-4, 4-4-4-4-3, 4-6-5, or all one group
+    valid_groupings = {(4, 4, 4, 4), (4, 4, 4, 4, 3), (4, 6, 5)}
+    if tuple(lengths) in valid_groupings:
+        return True
+    # Reject if any group is suspiciously short (1-2 digits) OR suspiciously long (7+)
+    # — these are protocol identifiers, not card numbers
+    if any(l <= 2 or l >= 7 for l in lengths):
+        return False
+    return True
+
+
 def _validate_candidate(cand: RawCandidate) -> tuple[float, float]:
     if cand.validator == "luhn":
         digits = re.sub(r"[^0-9]", "", cand.raw_value)
         # Payment cards must start with a valid BIN digit (3=Amex, 4=Visa, 5=MC, 6=Discover)
         if not digits or digits[0] not in "3456":
+            return (0.0, 0.40)
+        # Reject non-standard separator groupings (protocol sequence IDs)
+        if not _card_grouping_valid(cand.raw_value):
             return (0.0, 0.40)
         return (0.25, 0.0) if _luhn_valid(cand.raw_value) else (0.0, 0.30)
     if cand.rule_id == "SEC_ENTROPY" and _shannon_entropy(cand.raw_value) >= 4.0:
