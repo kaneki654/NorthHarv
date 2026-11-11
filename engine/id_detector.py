@@ -670,32 +670,10 @@ def risk_calculator(category: str, data_type: str, confidence: float) -> str:
     return "info"
 
 
-_REDACT_CATEGORIES = {"secret", "financial"}
-_REDACT_TYPES = {
-    "PAYMENT_CARD_NUMBER", "BANK_ACCOUNT_NUMBER",
-    "AWS_ACCESS_KEY", "GITHUB_TOKEN", "GOOGLE_API_KEY", "SLACK_TOKEN",
-    "PRIVATE_KEY", "DATABASE_CONNECTION_STRING", "EXPOSED_PASSWORD",
-    "BEARER_TOKEN", "JWT",
-}
-
-
 def evidence_redactor(cand: RawCandidate, config: EngineConfig) -> str:
     if cand.no_raw_retention:
         return "[CVV PRESENT — NOT RETAINED]"
-    raw = cand.raw_value.strip()
-    if not raw:
-        return raw
-    should_mask = (
-        cand.category in _REDACT_CATEGORIES
-        or cand.detected_data_type in _REDACT_TYPES
-    )
-    if should_mask:
-        pre = config.redaction_keep_prefix
-        suf = config.redaction_keep_suffix
-        if len(raw) > pre + suf:
-            mask_len = len(raw) - pre - suf
-            return raw[:pre] + config.redaction_mask_char * mask_len + raw[-suf:]
-    return raw
+    return cand.raw_value.strip()
 
 
 # ── Deduplication & compliance ────────────────────────────────────────────────
