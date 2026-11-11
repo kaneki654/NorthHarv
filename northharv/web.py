@@ -151,8 +151,16 @@ def _ensure_id_findings_table():
             validation_status   TEXT NOT NULL,
             rule_id             TEXT DEFAULT '',
             evidence_span_hash  TEXT DEFAULT '',
-            compliance_frameworks TEXT DEFAULT '[]'
+            compliance_frameworks TEXT DEFAULT '[]',
+            exp_date            TEXT DEFAULT '',
+            cvv_hint            TEXT DEFAULT ''
         )""")
+    # Migrate existing databases that pre-date this schema version
+    for col, default in (("exp_date", "''"), ("cvv_hint", "''")):
+        try:
+            conn.execute(f"ALTER TABLE id_findings ADD COLUMN {col} TEXT DEFAULT {default}")
+        except Exception:
+            pass
     conn.commit()
     conn.close()
 
@@ -1724,12 +1732,14 @@ async def api_id_scan(request: Request):
                    (finding_id, category, detected_data_type, document_format,
                     source_asset, detection_method, confidence_score, risk_severity,
                     redacted_evidence, discovery_timestamp, validation_status,
-                    rule_id, evidence_span_hash, compliance_frameworks)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    rule_id, evidence_span_hash, compliance_frameworks,
+                    exp_date, cvv_hint)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 [(f.finding_id, f.category, f.detected_data_type, f.document_format,
                   f.source_asset, f.detection_method, f.confidence_score, f.risk_severity,
                   f.redacted_evidence, f.discovery_timestamp, f.validation_status,
-                  f.rule_id, f.evidence_span_hash, json.dumps(f.compliance_frameworks))
+                  f.rule_id, f.evidence_span_hash, json.dumps(f.compliance_frameworks),
+                  f.exp_date, f.cvv_hint)
                  for f in findings],
             )
             conn.commit()
@@ -1773,7 +1783,8 @@ async def api_id_findings(
     keys = ["finding_id", "category", "detected_data_type", "document_format",
             "source_asset", "detection_method", "confidence_score", "risk_severity",
             "redacted_evidence", "discovery_timestamp", "validation_status",
-            "rule_id", "evidence_span_hash", "compliance_frameworks"]
+            "rule_id", "evidence_span_hash", "compliance_frameworks",
+            "exp_date", "cvv_hint"]
     findings = []
     for row in rows:
         d = dict(zip(keys, row))
@@ -1843,7 +1854,8 @@ async def api_id_export(
     finding_keys = ["finding_id", "category", "detected_data_type", "document_format",
                     "source_asset", "detection_method", "confidence_score", "risk_severity",
                     "redacted_evidence", "discovery_timestamp", "validation_status",
-                    "rule_id", "evidence_span_hash", "compliance_frameworks"]
+                    "rule_id", "evidence_span_hash", "compliance_frameworks",
+                    "exp_date", "cvv_hint"]
 
     def _enrich(r):
         d = dict(r)
@@ -1872,6 +1884,7 @@ async def api_id_export(
 
     # TSV
     cols = ["detected_data_type", "category", "risk_severity", "redacted_evidence",
+            "exp_date", "cvv_hint",
             "confidence_score", "detection_method", "validation_status",
             "source_asset", "service_name", "document_format",
             "discovery_timestamp", "compliance_frameworks", "src_banner", "src_headers"]

@@ -89,6 +89,8 @@ class Finding:
     rule_id: str = ""
     evidence_span_hash: str = ""
     compliance_frameworks: List[str] = field(default_factory=list)
+    exp_date: str = ""
+    cvv_hint: str = ""
 
 
 @dataclass
@@ -391,7 +393,16 @@ def _has_context(text: str, start: int, end: int, keywords: List[str], window: i
     lo = max(0, start - window)
     hi = min(len(text), end + window)
     surrounding = text[lo:hi].lower()
-    return any(k.lower() in surrounding for k in keywords)
+    for k in keywords:
+        kl = k.lower()
+        # Multi-word phrases use substring match; single tokens require word boundary
+        if " " in kl:
+            if kl in surrounding:
+                return True
+        else:
+            if re.search(r"\b" + re.escape(kl) + r"\b", surrounding):
+                return True
+    return False
 
 
 def _run_rules(
@@ -600,6 +611,66 @@ def confidence_scorer(
     return max(0.0, min(1.0, score))
 
 
+# (prefix_regex, min_digits, max_digits)
+_CARD_NETWORK_LENGTHS: List[tuple] = [
+    (re.compile(r"^3[47]"), 15, 15),   # Amex
+    (re.compile(r"^3[0689]"), 14, 14), # Diners Club
+    (re.compile(r"^35"), 16, 16),      # JCB
+    (re.compile(r"^4"), 13, 16),       # Visa
+    (re.compile(r"^5[1-5]"), 16, 16),  # MasterCard classic
+    (re.compile(r"^2[2-7]"), 16, 16),  # MasterCard 2-series
+    (re.compile(r"^6"), 16, 19),       # Discover / UnionPay / others
+]
+
+_EXP_DATE_RE = re.compile(r"\b(0[1-9]|1[0-2])/([2-9]\d)\b")
+_CVV_CONTEXT_RE = re.compile(
+    r"(?:cvv2?|cvc2?|cv2|cid|security[\s_\-]{0,2}code|card[\s_\-]{0,2}verif\w*)"
+    r"[\s:=_\-]{0,10}(\d{3,4})\b",
+    re.IGNORECASE,
+)
+_CARD_CONTEXT_WINDOW = 300
+
+
+def _valid_card_network_length(digits: str) -> bool:
+    for pat, mn, mx in _CARD_NETWORK_LENGTHS:
+        if pat.match(digits):
+            return mn <= len(digits) <= mx
+    return False
+
+
+def _in_hex_context(text: str, start: int, end: int) -> bool:
+    """True if the match is embedded inside a larger hex/UUID string."""
+    # Check the char immediately before (skipping separators)
+    lo = start - 1
+    while lo >= 0 and text[lo] in " -":
+        lo -= 1
+    if lo >= 0 and text[lo] in "abcdefABCDEF":
+        return True
+    # Check the char immediately after (skipping separators)
+    hi = end
+    while hi < len(text) and text[hi] in " -":
+        hi += 1
+    if hi < len(text) and text[hi] in "abcdefABCDEF":
+        return True
+    return False
+
+
+def _card_context(text: str, span_start: int, span_end: int) -> tuple[str, str]:
+    """Return (exp_date, cvv) found near a card match, empty strings if absent."""
+    lo = max(0, span_start - _CARD_CONTEXT_WINDOW)
+    hi = min(len(text), span_end + _CARD_CONTEXT_WINDOW)
+    window = text[lo:hi]
+    exp = ""
+    m = _EXP_DATE_RE.search(window)
+    if m:
+        exp = m.group(0)
+    cvv = ""
+    m = _CVV_CONTEXT_RE.search(window)
+    if m:
+        cvv = m.group(1)
+    return exp, cvv
+
+
 def _card_grouping_valid(raw: str) -> bool:
     """Reject non-card separator patterns like '54-149665781-0 0' (protocol sequence IDs).
 
@@ -627,7 +698,10 @@ def _card_grouping_valid(raw: str) -> bool:
     return True
 
 
-def _validate_candidate(cand: RawCandidate) -> tuple[float, float]:
+def _validate_candidate(
+    cand: RawCandidate,
+    full_text: str = "",
+) -> tuple[float, float]:
     if cand.validator == "luhn":
         digits = re.sub(r"[^0-9]", "", cand.raw_value)
         # Payment cards must start with a valid BIN digit (3=Amex, 4=Visa, 5=MC, 6=Discover)
@@ -635,6 +709,12 @@ def _validate_candidate(cand: RawCandidate) -> tuple[float, float]:
             return (0.0, 0.40)
         # Reject non-standard separator groupings (protocol sequence IDs)
         if not _card_grouping_valid(cand.raw_value):
+            return (0.0, 0.40)
+        # Reject numbers whose length doesn't match any known card network
+        if not _valid_card_network_length(digits):
+            return (0.0, 0.40)
+        # Reject numbers embedded in a larger hex string (CDN cookies, UUIDs, etc.)
+        if full_text and _in_hex_context(full_text, cand.span_start, cand.span_end):
             return (0.0, 0.40)
         return (0.25, 0.0) if _luhn_valid(cand.raw_value) else (0.0, 0.30)
     if cand.rule_id == "SEC_ENTROPY" and _shannon_entropy(cand.raw_value) >= 4.0:
@@ -886,7 +966,7 @@ def scan_asset(
     findings: List[Finding] = []
     for cand in candidates:
         ctx_delta = context_analyzer(cand, text)
-        v_bonus, v_penalty = _validate_candidate(cand)
+        v_bonus, v_penalty = _validate_candidate(cand, full_text=text)
         confidence = confidence_scorer(cand.base_confidence, ctx_delta, v_bonus, v_penalty)
         if confidence < config.min_confidence_to_report:
             continue
@@ -905,6 +985,11 @@ def scan_asset(
         else:
             validation = "unvalidated"
 
+        exp_date = ""
+        cvv_hint = ""
+        if cand.detected_data_type == "PAYMENT_CARD_NUMBER" and v_bonus > 0:
+            exp_date, cvv_hint = _card_context(text, cand.span_start, cand.span_end)
+
         findings.append(Finding(
             finding_id=_new_finding_id(),
             category=cand.category,
@@ -920,6 +1005,8 @@ def scan_asset(
             rule_id=cand.rule_id,
             evidence_span_hash=span_hash,
             compliance_frameworks=frameworks,
+            exp_date=exp_date,
+            cvv_hint=cvv_hint,
         ))
 
     return finding_deduplicator(findings, config, dedup_state)
